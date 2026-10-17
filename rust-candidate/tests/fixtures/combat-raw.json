@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "header": {"mapName":"de_mirage","serverName":"synthetic-ci","demoTicks":12800,"playbackTime":200},
+  "players": [
+    {"steamid":"synthetic-s1","name":"Synthetic Ada"},
+    {"steamid":"synthetic-s2","name":"Synthetic Ben"},
+    {"steamid":"synthetic-s3","name":"Synthetic Cal"}
+  ],
+  "roundEvents": [
+    {"kind":"round_start","tick":100,"round":1,"winner":null,"reason":null},
+    {"kind":"round_freeze_end","tick":200,"round":1,"winner":null,"reason":null},
+    {"kind":"round_end","tick":5000,"round":1,"winner":"CT","reason":"t_killed"},
+    {"kind":"round_start","tick":5100,"round":2,"winner":null,"reason":null},
+    {"kind":"round_freeze_end","tick":5200,"round":2,"winner":null,"reason":null},
+    {"kind":"round_end","tick":10500,"round":2,"winner":"T","reason":"ct_killed"}
+  ],
+  "roundSides": [
+    {"round":1,"steamid":"synthetic-s1","side":"CT"},
+    {"round":1,"steamid":"synthetic-s2","side":"T"},
+    {"round":1,"steamid":"synthetic-s3","side":"CT"},
+    {"round":2,"steamid":"synthetic-s1","side":"T"},
+    {"round":2,"steamid":"synthetic-s2","side":"CT"},
+    {"round":2,"steamid":"synthetic-s3","side":"T"}
+  ],
+  "combatHurts": [
+    {"tick":3000,"round":1,"weapon":"ak47","attackerSteamid":"synthetic-s1","attackerTeam":"CT","victimSteamid":"synthetic-s2","victimTeam":"T","damage":76},
+    {"tick":8100,"round":2,"weapon":"m4a1","attackerSteamid":"synthetic-s2","attackerTeam":"CT","victimSteamid":"synthetic-s1","victimTeam":"T","damage":99}
+  ],
+  "combatDeaths": [
+    {"tick":3100,"round":1,"weapon":"ak47","attackerSteamid":"synthetic-s1","attackerTeam":"CT","victimSteamid":"synthetic-s2","victimTeam":"T","assisterSteamid":"synthetic-s3","assisterTeam":"CT"},
+    {"tick":8200,"round":2,"weapon":"m4a1","attackerSteamid":"synthetic-s2","attackerTeam":"CT","victimSteamid":"synthetic-s1","victimTeam":"T","assisterSteamid":null,"assisterTeam":null}
+  ]
+}

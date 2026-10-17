@@ -4,19 +4,33 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 fn parse_args(args: &[OsString]) -> Result<(Option<PathBuf>, Option<PathBuf>), &'static str> {
-    match args {
-        [] => Ok((None, None)),
-        [flag, path] if flag == "--project" => Ok((Some(PathBuf::from(path)), None)),
-        [flag, path] if flag == "--capture" => {
-            let path = PathBuf::from(path);
-            if !path.is_absolute() || !path.extension().and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("png")) {
+    if args.len() % 2 != 0 || args.len() > 4 {
+        return Err(
+            "usage: demostrike [--project saved-project.cstrike|saved-project.fcproj] [--capture ABSOLUTE.png]",
+        );
+    }
+    let (mut project, mut capture) = (None, None);
+    for pair in args.chunks_exact(2) {
+        let path = PathBuf::from(&pair[1]);
+        if pair[0] == "--project" && project.is_none() {
+            project = Some(path);
+        } else if pair[0] == "--capture" && capture.is_none() {
+            if !path.is_absolute()
+                || !path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+            {
                 return Err("Capture output must be an absolute .png path");
             }
-            Ok((None, Some(path)))
+            capture = Some(path);
+        } else {
+            return Err(
+                "usage: demostrike [--project saved-project.cstrike|saved-project.fcproj] [--capture ABSOLUTE.png]",
+            );
         }
-        _ => Err("usage: demostrike [--project saved-project.cstrike|saved-project.fcproj] [--capture ABSOLUTE.png]"),
     }
+    Ok((project, capture))
 }
 
 fn main() -> eframe::Result<()> {
@@ -83,14 +97,37 @@ mod tests {
         let args = [OsString::from("--capture"), path.as_os_str().to_os_string()];
         let (project, capture) = parse_args(&args).unwrap();
         assert!(project.is_none());
-        assert_eq!(capture, Some(path));
+        assert_eq!(capture, Some(path.clone()));
         assert!(
             parse_args(&[OsString::from("--capture"), OsString::from("relative.png")]).is_err()
         );
-        assert!(parse_args(&[
+        assert!(
+            parse_args(&[
+                OsString::from("--capture"),
+                OsString::from("C:\\not-a-png.txt")
+            ])
+            .is_err()
+        );
+        let combined = [
+            OsString::from("--project"),
+            OsString::from("offline-edit.fcproj"),
             OsString::from("--capture"),
-            OsString::from("C:\\not-a-png.txt")
-        ])
-        .is_err());
+            path.as_os_str().to_os_string(),
+        ];
+        let (project, capture) = parse_args(&combined).unwrap();
+        assert_eq!(
+            project,
+            Some(std::path::PathBuf::from("offline-edit.fcproj"))
+        );
+        assert_eq!(capture, Some(path));
+        assert!(
+            parse_args(&[
+                OsString::from("--project"),
+                OsString::from("a.cstrike"),
+                OsString::from("--project"),
+                OsString::from("b.fcproj"),
+            ])
+            .is_err()
+        );
     }
 }

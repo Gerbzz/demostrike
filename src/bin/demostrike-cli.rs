@@ -17,9 +17,11 @@ fn run() -> Result<(), String> {
             let raw = demostrike::native_grenade_parser::NativeGrenadeParser
                 .parse(path, &demostrike::demo_import::ImportControl::new())?;
             let samples: usize = raw.trajectories.iter().map(|t| t.points.len()).sum();
-            println!("{}: {} releases, {} trajectories ({} samples), {} detonations, {} blinds, {} utility hurts, {} relevant deaths, {} nearby-player samples, {} round transitions; capability=native-combat-flash-v1 (economy unavailable)",
+            println!("{}: {} releases, {} trajectories ({} samples), {} detonations, {} blinds, {} utility hurts, {} relevant deaths, {} total combat hurts, {} total combat deaths, {} nearby-player samples, {} round transitions; capability={} (economy unavailable)",
                 raw.header.map_name, raw.throws.len(), raw.trajectories.len(), samples,
-                raw.detonations.len(), raw.blinds.len(), raw.hurts.len(), raw.deaths.len(), raw.positions.len(), raw.round_events.len());
+                raw.detonations.len(), raw.blinds.len(), raw.hurts.len(), raw.deaths.len(),
+                raw.combat_hurts.len(), raw.combat_deaths.len(), raw.positions.len(), raw.round_events.len(),
+                demostrike::native_grenade_parser::NativeGrenadeParser.capabilities().key());
             Ok(())
         }
         [command, demo_path, database] if command == "import-demo" || command == "import-grenades" => {

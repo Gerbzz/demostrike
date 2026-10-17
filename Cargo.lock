@@ -1326,6 +1326,7 @@ dependencies = [
  "eframe 0.36.2",
  "filmcraft-engine",
  "filmcraft-export",
+ "filmcraft-format",
  "filmcraft-project",
  "filmcraft-time",
  "filmcraft-ui-egui",

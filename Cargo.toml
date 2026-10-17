@@ -8,6 +8,7 @@ publish = false
 default = []
 native-ui = ["dep:eframe", "dep:rfd", "dep:cpal", "dep:image", "dep:filmcraft-engine", "dep:filmcraft-export", "dep:filmcraft-project", "dep:filmcraft-time", "dep:filmcraft-ui-egui"]
 legacy-editor-proof = ["native-ui", "dep:clipstrike-ui", "dep:clipstrike-media"]
+offline-filmcraft = ["dep:filmcraft-format", "dep:filmcraft-project", "dep:filmcraft-time"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -24,6 +25,7 @@ clipstrike-ui = { git = "https://github.com/Gerbzz/Clipstrike", rev = "fdf2f6ac8
 clipstrike-media = { git = "https://github.com/Gerbzz/Clipstrike", rev = "fdf2f6ac8828374b803577ae1f6b310b73860075", optional = true, features = ["gstreamer-backend"] }
 filmcraft-engine = { git = "https://github.com/Gerbzz/Clipstrike", rev = "4be130f016fe7a0a3b7ae5d59a037c299594aecb", optional = true }
 filmcraft-export = { git = "https://github.com/Gerbzz/Clipstrike", rev = "4be130f016fe7a0a3b7ae5d59a037c299594aecb", optional = true }
+filmcraft-format = { git = "https://github.com/Gerbzz/Clipstrike", rev = "4be130f016fe7a0a3b7ae5d59a037c299594aecb", optional = true }
 filmcraft-project = { git = "https://github.com/Gerbzz/Clipstrike", rev = "4be130f016fe7a0a3b7ae5d59a037c299594aecb", optional = true }
 filmcraft-time = { git = "https://github.com/Gerbzz/Clipstrike", rev = "4be130f016fe7a0a3b7ae5d59a037c299594aecb", optional = true }
 filmcraft-ui-egui = { path = "third_party/filmcraft_source/crates/ui-egui", optional = true }
@@ -38,6 +40,11 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 [[bin]]
 name = "demostrike"
 path = "src/main.rs"
+required-features = ["native-ui"]
+
+[[bin]]
+name = "demostrike-editor-runtime-proof"
+path = "src/bin/demostrike-editor-runtime-proof.rs"
 required-features = ["native-ui"]
 
 [[bin]]

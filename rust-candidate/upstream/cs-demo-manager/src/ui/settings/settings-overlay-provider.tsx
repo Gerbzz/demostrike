@@ -1,0 +1,128 @@
+import React, { createContext, useEffect, useId, useState } from 'react';
+import type { ReactNode } from 'react';
+import { SettingsOverlay } from './settings-overlay';
+import { SettingsCategory } from './settings-category';
+import { DialogProvider } from '../components/dialogs/dialog-provider';
+import { makeElementInert, makeElementNonInert } from 'csdm/ui/shared/inert';
+import { useFocusLastActiveElement } from 'csdm/ui/hooks/use-focus-last-active-element';
+import { APP_ELEMENT_ID, SETTINGS_ELEMENT_ID } from 'csdm/ui/shared/element-ids';
+
+export type SettingsOverlay = {
+  category: SettingsCategory;
+  openSettings: (category?: SettingsCategory) => void;
+  showCategory: (category: SettingsCategory) => void;
+  closeSettings: () => void;
+};
+
+export const SettingsOverlayContext = createContext<SettingsOverlay>({
+  category: SettingsCategory.Folders,
+  openSettings: () => {
+    throw new Error(
+      'openSettings not implemented, make sure your component is rendered within a SettingsOverlayProvider',
+    );
+  },
+  showCategory: () => {
+    throw new Error(
+      'showCategory not implemented, make sure your component is rendered within a SettingsOverlayProvider',
+    );
+  },
+  closeSettings: () => {
+    throw new Error(
+      'closeSettings not implemented, make sure your component is rendered within a SettingsOverlayProvider',
+    );
+  },
+});
+
+type Props = {
+  children: ReactNode;
+};
+
+export function SettingsOverlayProvider({ children }: Props) {
+  const { focusElement, updateElement } = useFocusLastActiveElement();
+  const inertOwnerId = useId();
+  const [areSettingsVisible, setAreSettingsVisible] = useState(false);
+  const [category, setCategory] = useState<SettingsCategory>(SettingsCategory.UI);
+
+  const showCategory = (category: SettingsCategory) => {
+    setCategory(category);
+  };
+
+  const openSettings = (category?: SettingsCategory) => {
+    if (category) {
+      showCategory(category);
+    }
+    updateElement();
+    makeElementInert(APP_ELEMENT_ID, inertOwnerId);
+    setAreSettingsVisible(true);
+  };
+
+  const closeSettings = () => {
+    makeElementNonInert(APP_ELEMENT_ID, inertOwnerId);
+    focusElement();
+    setAreSettingsVisible(false);
+  };
+
+  useEffect(() => {
+    const onOpenSettings = () => {
+      openSettings();
+    };
+
+    const unListen = window.csdm.onOpenSettings(onOpenSettings);
+
+    return () => {
+      unListen();
+    };
+    // https://github.com/reactwg/react-compiler/discussions/18
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [openSettings]);
+
+  useEffect(() => {
+    const toggleSettingsVisibility = () => {
+      if (areSettingsVisible) {
+        closeSettings();
+      } else {
+        openSettings();
+      }
+    };
+
+    const unListen = window.csdm.onToggleSettingsVisibility(toggleSettingsVisibility);
+
+    return () => {
+      unListen();
+    };
+    // https://github.com/reactwg/react-compiler/discussions/18
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [openSettings, closeSettings, areSettingsVisible]);
+
+  useEffect(() => {
+    const showAbout = () => {
+      openSettings(SettingsCategory.About);
+    };
+
+    const unListen = window.csdm.onShowAbout(showAbout);
+
+    return () => {
+      unListen();
+    };
+    // https://github.com/reactwg/react-compiler/discussions/18
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [openSettings]);
+
+  return (
+    <SettingsOverlayContext.Provider
+      value={{
+        category,
+        showCategory,
+        openSettings,
+        closeSettings,
+      }}
+    >
+      {children}
+      {areSettingsVisible ? (
+        <DialogProvider inertElementId={SETTINGS_ELEMENT_ID}>
+          <SettingsOverlay onClose={closeSettings} />
+        </DialogProvider>
+      ) : null}
+    </SettingsOverlayContext.Provider>
+  );
+}

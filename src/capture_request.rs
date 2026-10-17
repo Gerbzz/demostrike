@@ -71,7 +71,8 @@ pub fn build_capture_request(database: &Path, event_id: i64) -> Result<CaptureRe
         .map_err(|e| format!("cannot open match database read-only: {e}"))?;
     let detail = queries::get_event_detail(&conn, event_id).map_err(|e| e.to_string())?;
     if !matches!(detail.summary.parser_capability,
-        ParserCapabilities::NativeCombatFlashV1 | ParserCapabilities::GrenadeAnalysisOnlyV1) {
+        ParserCapabilities::NativeCombatFlashV1 | ParserCapabilities::NativeCombatFullV2
+        | ParserCapabilities::GrenadeAnalysisOnlyV1) {
         return Err("capture planning requires a natively imported demo with source-bound throw facts".into());
     }
     let (stored_hash, projectile_entity_id): (Option<String>, Option<i64>) = conn.query_row(

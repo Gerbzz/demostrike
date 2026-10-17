@@ -1,0 +1,67 @@
+name: Public CS2 decoder probe
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/public-cs2-decoder-probe.yml'
+      - 'src/native_grenade_parser.rs'
+      - 'src/analysis/mod.rs'
+      - 'src/demo_import.rs'
+      - 'src/db/**'
+      - 'tests/public_demo_integration.rs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-demo-decoder:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch bounded public CS2 parser fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="$RUNNER_TEMP/public-cs2-fixture.dem"
+          curl --fail --location --retry 2 --max-filesize 65000000 --max-time 180 \
+            --output "$fixture" \
+            'https://raw.githubusercontent.com/LaihoE/demoparser/45ca85aeac8fb0de9d385124d2c7fe0e7b8ff0c8/src/parser/test_demo.dem'
+          test "$(wc -c < "$fixture")" -eq 60601900
+          test "$(git hash-object "$fixture")" = e5cc97203262ab36bb756514b02d56eb6bd972a0
+          python -c 'import pathlib,os; p=pathlib.Path(os.environ["RUNNER_TEMP"])/"public-cs2-fixture.dem"; assert p.open("rb").read(8)==b"PBDEMS2\0"'
+          sha256sum "$fixture"
+      - name: Probe complete native CS2 decoder
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --bin demostrike-cli -- probe-demo "$RUNNER_TEMP/public-cs2-fixture.dem"
+      - name: Verify real decoder to SQLite transaction and restart
+        shell: bash
+        env:
+          PUBLIC_CS2_DEMO: ${{ runner.temp }}/public-cs2-fixture.dem
+        run: cargo test --locked --test public_demo_integration -- --ignored --nocapture
+      - name: Reopen real import from a separate process
+        shell: bash
+        run: |
+          set -euo pipefail
+          database="$RUNNER_TEMP/public-process.sqlite"
+          cargo run --locked --bin demostrike-cli -- import-demo "$RUNNER_TEMP/public-cs2-fixture.dem" "$database"
+          python - <<'PY'
+          import os, sqlite3
+          connection = sqlite3.connect(os.path.join(os.environ['RUNNER_TEMP'], 'public-process.sqlite'))
+          count = lambda table: connection.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
+          assert count('matches') == 1
+          assert count('utility_events') == 150
+          assert count('raw_combat_hurts') == 264
+          assert count('raw_combat_deaths') == 73
+          assert count('player_round_combat') > 0
+          assert connection.execute('SELECT parser_capability FROM matches').fetchone()[0] == 'native-combat-full-v2'
+          assert connection.execute('SELECT COUNT(*) FROM rounds WHERE start_tick >= end_tick').fetchone()[0] == 0
+          print('PASS: separate-process SQLite reopen retains real decoded facts and ordered rounds')
+          PY
+

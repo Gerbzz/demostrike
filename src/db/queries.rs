@@ -1,6 +1,6 @@
 //! All SQL lives here. Commands call these; nothing else touches the DB.
 
-use crate::analysis::AnalyzedMatch;
+use crate::analysis::{AnalyzedMatch, AnalyzedRound};
 use crate::domain::*;
 use crate::error::{AppError, AppResult};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
@@ -12,13 +12,63 @@ fn canonical_source_identity(path: &str) -> Option<String> {
     let resolved = std::fs::canonicalize(path).ok()?;
     let text = resolved.to_string_lossy().into_owned();
     #[cfg(windows)]
-    { Some(text.to_lowercase()) }
+    {
+        Some(text.to_lowercase())
+    }
     #[cfg(not(windows))]
-    { Some(text) }
+    {
+        Some(text)
+    }
 }
 
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+// Retain observed bomb events and projectile tails between recorded rounds
+// under the preceding round, without inventing playable player frames there.
+fn viewer_observation_round(rounds: &[AnalyzedRound], tick: i64) -> Option<i64> {
+    if let Some(round) = rounds.iter().find(|round| {
+        matches!((round.start_tick, round.end_tick), (Some(start), Some(end)) if start <= tick && tick <= end)
+    }) {
+        return Some(round.round_number);
+    }
+    rounds
+        .windows(2)
+        .find_map(|pair| match (pair[0].end_tick, pair[1].start_tick) {
+            (Some(end), Some(next_start)) if end < tick && tick < next_start => {
+                Some(pair[0].round_number)
+            }
+            _ => None,
+        })
+}
+
+#[cfg(test)]
+mod viewer_observation_round_tests {
+    use super::*;
+
+    fn round(number: i64, start: i64, end: i64) -> AnalyzedRound {
+        AnalyzedRound {
+            round_number: number,
+            start_tick: Some(start),
+            freeze_end_tick: None,
+            end_tick: Some(end),
+            winner: None,
+            end_reason: None,
+            team_a_side: None,
+            team_b_side: None,
+            ct_equip_value: None,
+            t_equip_value: None,
+        }
+    }
+
+    #[test]
+    fn inter_round_bomb_event_is_retained_with_preceding_round() {
+        let rounds = [round(3, 15680, 21457), round(4, 21905, 30000)];
+        assert_eq!(viewer_observation_round(&rounds, 21853), Some(3));
+        assert_eq!(viewer_observation_round(&rounds, 21905), Some(4));
+        assert_eq!(viewer_observation_round(&rounds, 30001), None);
+    }
 }
 
 // ---------------------------------------------------------------- matches
@@ -26,7 +76,8 @@ fn now_iso() -> String {
 /// Paths and fingerprints for import identity checks. Old rows have no hash.
 pub fn source_identities(conn: &Connection) -> AppResult<Vec<(i64, String, Option<String>)>> {
     let mut stmt = conn.prepare("SELECT id, file_path, source_sha256 FROM matches")?;
-    Ok(stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+    Ok(stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<Result<_, _>>()?)
 }
 
@@ -43,7 +94,14 @@ pub fn insert_match_with_control(
     should_cancel: impl Fn() -> bool,
     begin_commit: impl FnOnce() -> AppResult<()>,
 ) -> AppResult<i64> {
-    insert_match_with_parser_capability(conn, file_path, m, "reference-raw-facts", should_cancel, begin_commit)
+    insert_match_with_parser_capability(
+        conn,
+        file_path,
+        m,
+        "reference-raw-facts",
+        should_cancel,
+        begin_commit,
+    )
 }
 
 pub fn insert_match_with_parser_capability(
@@ -54,7 +112,15 @@ pub fn insert_match_with_parser_capability(
     should_cancel: impl Fn() -> bool,
     begin_commit: impl FnOnce() -> AppResult<()>,
 ) -> AppResult<i64> {
-    insert_match_with_source_hash(conn, file_path, m, parser_capability, None, should_cancel, begin_commit)
+    insert_match_with_source_hash(
+        conn,
+        file_path,
+        m,
+        parser_capability,
+        None,
+        should_cancel,
+        begin_commit,
+    )
 }
 
 pub fn insert_match_with_source_hash(
@@ -67,14 +133,21 @@ pub fn insert_match_with_source_hash(
     begin_commit: impl FnOnce() -> AppResult<()>,
 ) -> AppResult<i64> {
     let check_cancel = || {
-        if should_cancel() { Err(AppError::Invalid("demo import cancelled".into())) }
-        else { Ok(()) }
+        if should_cancel() {
+            Err(AppError::Invalid("demo import cancelled".into()))
+        } else {
+            Ok(())
+        }
     };
     check_cancel()?;
     let tx = conn.transaction()?;
-    let existing: Option<i64> = tx.query_row(
-        "SELECT id FROM matches WHERE file_path = ?1", params![file_path], |row| row.get(0)
-    ).optional()?;
+    let existing: Option<i64> = tx
+        .query_row(
+            "SELECT id FROM matches WHERE file_path = ?1",
+            params![file_path],
+            |row| row.get(0),
+        )
+        .optional()?;
     if let Some(id) = existing {
         return Err(AppError::Invalid(format!(
             "demo is already imported as match {id}; ordinary reimport is blocked to preserve favorites, tags, collections and render-job references"
@@ -82,7 +155,9 @@ pub fn insert_match_with_source_hash(
     }
     if let Some(identity) = canonical_source_identity(file_path) {
         let mut stmt = tx.prepare("SELECT id, file_path FROM matches")?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
         for row in rows {
             let (id, old_path) = row?;
             if canonical_source_identity(&old_path).as_deref() == Some(identity.as_str()) {
@@ -93,8 +168,14 @@ pub fn insert_match_with_source_hash(
         }
     }
     if let Some(hash) = source_sha256 {
-        if let Some(id) = tx.query_row("SELECT id FROM matches WHERE source_sha256 = ?1",
-            params![hash], |row| row.get::<_, i64>(0)).optional()? {
+        if let Some(id) = tx
+            .query_row(
+                "SELECT id FROM matches WHERE source_sha256 = ?1",
+                params![hash],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+        {
             return Err(AppError::Invalid(format!("identical demo bytes are already imported as match {id}; existing annotations were preserved")));
         }
     }
@@ -136,8 +217,8 @@ pub fn insert_match_with_source_hash(
 
         let mut stmt = tx.prepare(
             "INSERT INTO rounds (match_id, round_number, start_tick, freeze_end_tick, end_tick,
-                                 winner, end_reason, ct_equip_value, t_equip_value)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                                 winner, end_reason, ct_equip_value, t_equip_value, team_a_side, team_b_side)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )?;
         for r in &m.rounds {
             check_cancel()?;
@@ -150,7 +231,80 @@ pub fn insert_match_with_source_hash(
                 r.winner,
                 r.end_reason,
                 r.ct_equip_value,
-                r.t_equip_value
+                r.t_equip_value,
+                r.team_a_side,
+                r.team_b_side
+            ])?;
+        }
+
+        let mut combat = tx.prepare(
+            "INSERT INTO player_round_combat
+                (match_id, round_number, steamid, side, enemy_kills, deaths,
+                 enemy_assists, enemy_health_damage, effective_enemy_health_damage, stable_team)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        )?;
+        for row in &m.player_round_combat {
+            check_cancel()?;
+            combat.execute(params![
+                match_id,
+                row.round_number,
+                row.steamid,
+                row.side,
+                row.enemy_kills,
+                row.deaths,
+                row.enemy_assists,
+                row.enemy_health_damage,
+                row.effective_enemy_health_damage,
+                row.stable_team
+            ])?;
+        }
+
+        let mut hurts = tx.prepare(
+            "INSERT INTO raw_combat_hurts (match_id, source_index, event_order, tick,
+                round_number, weapon, attacker_steamid, attacker_side, victim_steamid,
+                victim_side, raw_dmg_health, post_health, start_health, effective_health_damage)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+        )?;
+        for (index, row) in m.raw_combat_hurts.iter().enumerate() {
+            check_cancel()?;
+            hurts.execute(params![
+                match_id,
+                index as i64,
+                row.event_order,
+                row.tick,
+                row.round,
+                row.weapon,
+                row.attacker_steamid,
+                row.attacker_team,
+                row.victim_steamid,
+                row.victim_team,
+                row.damage,
+                row.post_health,
+                row.start_health,
+                row.effective_damage
+            ])?;
+        }
+        let mut deaths = tx.prepare(
+            "INSERT INTO raw_combat_deaths (match_id, source_index, event_order, tick,
+                round_number, weapon, attacker_steamid, attacker_side, victim_steamid,
+                victim_side, assister_steamid, assister_side)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+        )?;
+        for (index, row) in m.raw_combat_deaths.iter().enumerate() {
+            check_cancel()?;
+            deaths.execute(params![
+                match_id,
+                index as i64,
+                row.event_order,
+                row.tick,
+                row.round,
+                row.weapon,
+                row.attacker_steamid,
+                row.attacker_team,
+                row.victim_steamid,
+                row.victim_team,
+                row.assister_steamid,
+                row.assister_team
             ])?;
         }
 
@@ -219,14 +373,139 @@ pub fn insert_match_with_source_hash(
         let mut facts = tx.prepare(
             "INSERT INTO raw_effect_facts (match_id, fact_kind, source_index, raw_json,
                 resolution, assigned_event_id, candidate_event_ids)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
         for fact in &m.effect_facts {
             check_cancel()?;
             let assigned = fact.assigned_event.map(|index| event_ids[index]);
-            let candidates: Vec<i64> = fact.candidate_events.iter().map(|&index| event_ids[index]).collect();
-            facts.execute(params![match_id, fact.kind, fact.source_index as i64,
-                fact.raw_json.to_string(), fact.resolution, assigned, serde_json::to_string(&candidates)?])?;
+            let candidates: Vec<i64> = fact
+                .candidate_events
+                .iter()
+                .map(|&index| event_ids[index])
+                .collect();
+            facts.execute(params![
+                match_id,
+                fact.kind,
+                fact.source_index as i64,
+                fact.raw_json.to_string(),
+                fact.resolution,
+                assigned,
+                serde_json::to_string(&candidates)?
+            ])?;
+        }
+    }
+
+    if m.position_stream_available {
+        // Assign positions from absolute demo ticks after final round-boundary
+        // reconciliation. A projectile can outlive its release round; its
+        // frame belongs to the round active at that tick.
+        let round_at = |tick: i64| {
+            m.rounds.iter().rev().find(|round| {
+            matches!((round.start_tick, round.end_tick), (Some(start), Some(end)) if start <= tick && tick <= end)
+        }).map(|round| round.round_number)
+        };
+        {
+            let mut insert = tx.prepare(
+                "INSERT INTO viewer_bomb_events
+                 (match_id,source_index,round_number,kind,tick,actor_steamid,actor_name,site_id,x,y,z)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            )?;
+            for (index, event) in m.bomb_events.iter().enumerate() {
+                check_cancel()?;
+                let Some(round_number) = viewer_observation_round(&m.rounds, event.tick) else {
+                    continue;
+                };
+                insert.execute(params![
+                    match_id,
+                    index as i64,
+                    round_number,
+                    event.kind,
+                    event.tick,
+                    event.actor_steamid,
+                    event.actor_name,
+                    event.site_id,
+                    event.x,
+                    event.y,
+                    event.z,
+                ])?;
+            }
+        }
+        if m.bomb_event_stream_available {
+            tx.execute(
+                "UPDATE matches SET viewer_bomb_version=1 WHERE id=?1",
+                [match_id],
+            )?;
+        }
+        let mut player_rows = 0_i64;
+        {
+            let mut insert = tx.prepare(
+                "INSERT OR REPLACE INTO viewer_player_positions
+                (match_id,round_number,tick,steamid,name,side,x,y,z,is_alive,health,yaw)
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            )?;
+            for position in &m.viewer_positions {
+                check_cancel()?;
+                let (Some(tick), Some(steamid), Some(name), Some(x), Some(y), Some(z)) = (
+                    position.tick,
+                    position.steamid.as_deref(),
+                    position.name.as_deref(),
+                    position.x,
+                    position.y,
+                    position.z,
+                ) else {
+                    continue;
+                };
+                let Some(round_number) = round_at(tick) else {
+                    continue;
+                };
+                insert.execute(params![
+                    match_id,
+                    round_number,
+                    tick,
+                    steamid,
+                    name,
+                    position.team,
+                    x,
+                    y,
+                    z,
+                    position.is_alive,
+                    position.health,
+                    position.yaw
+                ])?;
+                player_rows += 1;
+            }
+        }
+        {
+            let mut insert = tx.prepare("INSERT OR REPLACE INTO viewer_grenade_positions
+                (match_id,round_number,tick,trajectory_index,entity_id,grenade_type,thrower_steamid,x,y,z)
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")?;
+            for (index, trajectory) in m.viewer_trajectories.iter().enumerate() {
+                for point in &trajectory.points {
+                    check_cancel()?;
+                    let tick = point[0] as i64;
+                    let Some(round_number) = viewer_observation_round(&m.rounds, tick) else {
+                        continue;
+                    };
+                    insert.execute(params![
+                        match_id,
+                        round_number,
+                        tick,
+                        index as i64,
+                        trajectory.entity_id,
+                        trajectory.grenade_type,
+                        trajectory.steamid,
+                        point[1],
+                        point[2],
+                        point[3]
+                    ])?;
+                }
+            }
+        }
+        if player_rows > 0 {
+            tx.execute(
+                "UPDATE matches SET viewer_position_version=1 WHERE id=?1",
+                [match_id],
+            )?;
         }
     }
 
@@ -296,17 +575,22 @@ pub fn delete_match(conn: &Connection, match_id: i64) -> AppResult<()> {
 
 /// Lossless effect source rows, including those whose grenade is ambiguous or unresolved.
 pub fn list_raw_effect_facts(conn: &Connection, match_id: i64) -> AppResult<Vec<RawEffectFact>> {
-    let mut stmt = conn.prepare("SELECT fact_kind, source_index, raw_json, resolution,
+    let mut stmt = conn.prepare(
+        "SELECT fact_kind, source_index, raw_json, resolution,
         assigned_event_id, candidate_event_ids FROM raw_effect_facts
-        WHERE match_id = ?1 ORDER BY fact_kind, source_index")?;
+        WHERE match_id = ?1 ORDER BY fact_kind, source_index",
+    )?;
     let rows = stmt.query_map(params![match_id], |row| {
         let raw_json: String = row.get(2)?;
         let candidates: String = row.get(5)?;
         Ok(RawEffectFact {
-            kind: row.get(0)?, source_index: row.get(1)?,
+            kind: row.get(0)?,
+            source_index: row.get(1)?,
             raw_json: serde_json::from_str(&raw_json).map_err(|_| rusqlite::Error::InvalidQuery)?,
-            resolution: row.get(3)?, assigned_event_id: row.get(4)?,
-            candidate_event_ids: serde_json::from_str(&candidates).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            resolution: row.get(3)?,
+            assigned_event_id: row.get(4)?,
+            candidate_event_ids: serde_json::from_str(&candidates)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
@@ -334,11 +618,20 @@ fn summary_from_row(row: &Row) -> rusqlite::Result<UtilityEventSummary> {
     let parser_capability = ParserCapabilities::from_key(&row.get::<_, String>(22)?)
         .ok_or(rusqlite::Error::InvalidQuery)?;
     let attribution_version: Option<i64> = row.get(23)?;
-    let complete = (24..=27).map(|index| row.get::<_, i64>(index))
-        .collect::<rusqlite::Result<Vec<_>>>()?.into_iter().all(|value| value != 0);
-    let effect_attribution_status = if !parser_capability.supports_combat() { "unsupported" }
-        else if attribution_version != Some(2) { "legacy-unverified" }
-        else if !complete { "unavailable" } else { "complete" };
+    let complete = (24..=27)
+        .map(|index| row.get::<_, i64>(index))
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .all(|value| value != 0);
+    let effect_attribution_status = if !parser_capability.supports_combat() {
+        "unsupported"
+    } else if attribution_version != Some(2) {
+        "legacy-unverified"
+    } else if !complete {
+        "unavailable"
+    } else {
+        "complete"
+    };
     Ok(UtilityEventSummary {
         id: row.get(0)?,
         match_id: row.get(1)?,
@@ -960,9 +1253,9 @@ pub fn render_job_status(conn: &Connection, job_id: i64) -> AppResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::{AnalyzedEvent, AnalyzedRound};
+    use crate::analysis::{AnalyzedEvent, AnalyzedPlayerRoundCombat, AnalyzedRound};
     use crate::db::open_in_memory;
-    use crate::parser::raw::RawPlayer;
+    use crate::parser::raw::{RawPlayer, RawPosition, RawTrajectory};
 
     fn sample_match() -> AnalyzedMatch {
         AnalyzedMatch {
@@ -980,6 +1273,8 @@ mod tests {
                 end_tick: Some(8000),
                 winner: Some("CT".into()),
                 end_reason: Some("ct_win_elimination".into()),
+                team_a_side: None,
+                team_b_side: None,
                 ct_equip_value: Some(4000),
                 t_equip_value: Some(3000),
             }],
@@ -1026,6 +1321,24 @@ mod tests {
                 nearby_players: vec![],
             }],
             effect_facts: vec![],
+            player_round_combat: vec![AnalyzedPlayerRoundCombat {
+                round_number: 1,
+                steamid: "s1".into(),
+                side: Some("CT".into()),
+                enemy_kills: Some(2),
+                deaths: 1,
+                enemy_assists: Some(1),
+                enemy_health_damage: Some(87),
+                effective_enemy_health_damage: None,
+                stable_team: None,
+            }],
+            raw_combat_hurts: vec![],
+            raw_combat_deaths: vec![],
+            bomb_events: vec![],
+            bomb_event_stream_available: false,
+            position_stream_available: false,
+            viewer_positions: vec![],
+            viewer_trajectories: vec![],
             score_ct: 13,
             score_t: 7,
         }
@@ -1034,13 +1347,57 @@ mod tests {
     #[test]
     fn insert_query_roundtrip() {
         let mut conn = open_in_memory().unwrap();
-        let id = insert_match(&mut conn, "C:/demos/test.dem", &sample_match()).unwrap();
+        let mut analyzed = sample_match();
+        analyzed.raw_combat_hurts = serde_json::from_value(serde_json::json!([{
+            "eventOrder":1,"tick":3100,"round":1,"weapon":"ak47",
+            "attackerSteamid":"s1","attackerTeam":"CT","victimSteamid":"s2",
+            "victimTeam":"T","damage":15
+        }]))
+        .unwrap();
+        analyzed.raw_combat_deaths = serde_json::from_value(serde_json::json!([{
+            "eventOrder":2,"tick":3100,"round":1,"weapon":"ak47",
+            "attackerSteamid":"s1","attackerTeam":"CT","victimSteamid":"s2",
+            "victimTeam":"T","assisterSteamid":null,"assisterTeam":null
+        }]))
+        .unwrap();
+        let id = insert_match(&mut conn, "C:/demos/test.dem", &analyzed).unwrap();
         assert!(id > 0);
 
         let matches = list_matches(&conn).unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].event_count, 1);
         assert_eq!(matches[0].players[0].name, "alice");
+        let combat: (String, i64, i64, i64) = conn
+            .query_row(
+                "SELECT side, enemy_kills, enemy_assists, enemy_health_damage
+             FROM player_round_combat WHERE match_id = ?1 AND steamid = 's1'",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(combat, ("CT".into(), 2, 1, 87));
+        let hurt: (i64, i64, String, String, i64) = conn
+            .query_row(
+                "SELECT event_order, tick, weapon, victim_steamid, raw_dmg_health
+             FROM raw_combat_hurts WHERE match_id = ?1",
+                [id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(hurt, (1, 3100, "ak47".into(), "s2".into(), 15));
+        let death: (i64, i64, String) = conn.query_row(
+            "SELECT event_order, tick, victim_steamid FROM raw_combat_deaths WHERE match_id = ?1",
+            [id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(death, (2, 3100, "s2".into()));
 
         let events = query_events(&conn, &EventFilter::default()).unwrap();
         assert_eq!(events.len(), 1);
@@ -1055,22 +1412,153 @@ mod tests {
     }
 
     #[test]
+    fn viewer_frames_keep_absolute_ticks_and_completed_round_boundaries() {
+        let mut conn = open_in_memory().unwrap();
+        let mut analyzed = sample_match();
+        let mut next_round = analyzed.rounds[0].clone();
+        next_round.round_number = 2;
+        next_round.start_tick = Some(9000);
+        next_round.freeze_end_tick = Some(9500);
+        next_round.end_tick = Some(16000);
+        analyzed.rounds.push(next_round);
+        analyzed.position_stream_available = true;
+        analyzed.viewer_positions = [999, 1000, 3000, 8000, 8001]
+            .into_iter()
+            .map(|tick| RawPosition {
+                tick: Some(tick),
+                steamid: Some("s1".into()),
+                name: Some("alice".into()),
+                team: Some("CT".into()),
+                x: Some(tick as f64),
+                y: Some(20.0),
+                z: Some(30.0),
+                is_alive: Some(true),
+                health: Some(90),
+                yaw: Some(45.0),
+            })
+            .collect();
+        analyzed.viewer_trajectories = vec![RawTrajectory {
+            entity_id: 7,
+            grenade_type: Some("CSmokeGrenadeProjectile".into()),
+            steamid: Some("s1".into()),
+            name: Some("alice".into()),
+            points: vec![[3000.0, 1.0, 2.0, 3.0], [8001.0, 4.0, 5.0, 6.0]],
+        }];
+        let id = insert_match(&mut conn, "C:/demos/viewer.dem", &analyzed).unwrap();
+        let version: Option<i64> = conn
+            .query_row(
+                "SELECT viewer_position_version FROM matches WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let ticks: Vec<i64> = conn
+            .prepare("SELECT tick FROM viewer_player_positions WHERE match_id=?1 ORDER BY tick")
+            .unwrap()
+            .query_map([id], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let grenade: Vec<(i64, i64, i64, String)> = conn
+            .prepare("SELECT round_number,tick,entity_id,grenade_type FROM viewer_grenade_positions WHERE match_id=?1 ORDER BY tick")
+            .unwrap()
+            .query_map([id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(version, Some(1));
+        assert_eq!(ticks, vec![1000, 3000, 8000]);
+        assert_eq!(
+            grenade,
+            vec![
+                (1, 3000, 7, "CSmokeGrenadeProjectile".into()),
+                (1, 8001, 7, "CSmokeGrenadeProjectile".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn cancellation_rolls_back_raw_combat_and_match_together() {
+        let mut conn = open_in_memory().unwrap();
+        let mut analyzed = sample_match();
+        analyzed.raw_combat_hurts = serde_json::from_value(serde_json::json!([{
+            "eventOrder":1,"tick":3100,"round":1,"weapon":"ak47",
+            "attackerSteamid":"s1","attackerTeam":"CT","victimSteamid":"s2",
+            "victimTeam":"T","damage":15
+        }]))
+        .unwrap();
+        analyzed.raw_combat_deaths = serde_json::from_value(serde_json::json!([{
+            "eventOrder":2,"tick":3100,"round":1,"weapon":"ak47",
+            "attackerSteamid":"s1","attackerTeam":"CT","victimSteamid":"s2",
+            "victimTeam":"T","assisterSteamid":null,"assisterTeam":null
+        }]))
+        .unwrap();
+        let checks = std::cell::Cell::new(0);
+        let result = insert_match_with_source_hash(
+            &mut conn,
+            "C:/cancelled.dem",
+            &analyzed,
+            "native-combat-full-v2",
+            None,
+            || {
+                checks.set(checks.get() + 1);
+                checks.get() >= 6
+            },
+            || Ok(()),
+        );
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        for table in [
+            "matches",
+            "player_round_combat",
+            "raw_combat_hurts",
+            "raw_combat_deaths",
+        ] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table} must roll back with the match");
+        }
+    }
+
+    #[test]
     fn ambiguous_effect_is_preserved_and_masked_in_public_queries() {
         let mut conn = open_in_memory().unwrap();
         let mut analyzed = sample_match();
         analyzed.events[0].damage_enemy = 40;
         analyzed.events[0].damage_attribution_complete = false;
-        analyzed.effect_facts.push(crate::analysis::EffectAttribution {
-            kind: "hurt", source_index: 0,
-            raw_json: serde_json::json!({"tick": 3201, "damage": 40}),
-            resolution: "ambiguous", assigned_event: None, candidate_events: vec![0],
-        });
-        let match_id = insert_match_with_parser_capability(&mut conn, "C:/demos/ambiguous.dem",
-            &analyzed, "native-combat-flash-v1", || false, || Ok(())).unwrap();
+        analyzed
+            .effect_facts
+            .push(crate::analysis::EffectAttribution {
+                kind: "hurt",
+                source_index: 0,
+                raw_json: serde_json::json!({"tick": 3201, "damage": 40}),
+                resolution: "ambiguous",
+                assigned_event: None,
+                candidate_events: vec![0],
+            });
+        let match_id = insert_match_with_parser_capability(
+            &mut conn,
+            "C:/demos/ambiguous.dem",
+            &analyzed,
+            "native-combat-flash-v1",
+            || false,
+            || Ok(()),
+        )
+        .unwrap();
         let match_summary = list_matches(&conn).unwrap().remove(0);
-        assert_eq!((match_summary.effect_fact_count, match_summary.ambiguous_effect_count,
-            match_summary.unresolved_effect_count), (1, 1, 0));
-        let summary = query_events(&conn, &EventFilter::default()).unwrap().remove(0);
+        assert_eq!(
+            (
+                match_summary.effect_fact_count,
+                match_summary.ambiguous_effect_count,
+                match_summary.unresolved_effect_count
+            ),
+            (1, 1, 0)
+        );
+        let summary = query_events(&conn, &EventFilter::default())
+            .unwrap()
+            .remove(0);
         assert_eq!(summary.effect_attribution_status, "unavailable");
         assert_eq!(summary.damage_enemy, None);
         assert_eq!(summary.kills, Some(0));
@@ -1104,11 +1592,18 @@ mod tests {
         tag_event(&conn, event_id, "approved").unwrap();
         let collection = create_collection(&conn, "First cut").unwrap();
         add_to_collection(&conn, collection.id, &[event_id]).unwrap();
-        conn.execute("INSERT INTO render_jobs (status, settings, output_dir, created_at)
-            VALUES ('queued', '{}', 'C:/output', '2026-10-09')", []).unwrap();
+        conn.execute(
+            "INSERT INTO render_jobs (status, settings, output_dir, created_at)
+            VALUES ('queued', '{}', 'C:/output', '2026-10-09')",
+            [],
+        )
+        .unwrap();
         let job_id = conn.last_insert_rowid();
-        conn.execute("INSERT INTO render_job_events (job_id, event_id, position) VALUES (?1, ?2, 0)",
-            params![job_id, event_id]).unwrap();
+        conn.execute(
+            "INSERT INTO render_job_events (job_id, event_id, position) VALUES (?1, ?2, 0)",
+            params![job_id, event_id],
+        )
+        .unwrap();
 
         let error = insert_match(&mut conn, "C:/demos/test.dem", &sample_match()).unwrap_err();
         assert!(error.to_string().contains("reimport is blocked"));
@@ -1118,10 +1613,25 @@ mod tests {
         assert_eq!(events[0].id, event_id);
         assert!(events[0].favorite);
         assert_eq!(events[0].tags, ["approved"]);
-        assert_eq!(query_events(&conn, &EventFilter { collection_id: Some(collection.id),
-            ..Default::default() }).unwrap().len(), 1);
-        let links: i64 = conn.query_row("SELECT COUNT(*) FROM render_job_events WHERE job_id = ?1 AND event_id = ?2",
-            params![job_id, event_id], |row| row.get(0)).unwrap();
+        assert_eq!(
+            query_events(
+                &conn,
+                &EventFilter {
+                    collection_id: Some(collection.id),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        let links: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM render_job_events WHERE job_id = ?1 AND event_id = ?2",
+                params![job_id, event_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(links, 1);
     }
 
@@ -1138,17 +1648,34 @@ mod tests {
         tag_event(&conn, event_id, "keep").unwrap();
         conn.execute("INSERT INTO render_jobs (status, settings, output_dir, created_at) VALUES ('queued','{}','C:/output','2026-10-09')", []).unwrap();
         let job_id = conn.last_insert_rowid();
-        conn.execute("INSERT INTO render_job_events (job_id,event_id,position) VALUES (?1,?2,0)", params![job_id,event_id]).unwrap();
+        conn.execute(
+            "INSERT INTO render_job_events (job_id,event_id,position) VALUES (?1,?2,0)",
+            params![job_id, event_id],
+        )
+        .unwrap();
 
         let error = insert_match(&mut conn, &alias.to_string_lossy(), &sample_match()).unwrap_err();
         assert!(error.to_string().contains("equivalent source path"));
-        assert_eq!(list_matches(&conn).unwrap().iter().map(|m| m.id).collect::<Vec<_>>(), vec![id]);
+        assert_eq!(
+            list_matches(&conn)
+                .unwrap()
+                .iter()
+                .map(|m| m.id)
+                .collect::<Vec<_>>(),
+            vec![id]
+        );
         let events = query_events(&conn, &EventFilter::default()).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].id, event_id);
         assert!(events[0].favorite);
         assert_eq!(events[0].tags, ["keep"]);
-        let links: i64 = conn.query_row("SELECT COUNT(*) FROM render_job_events WHERE job_id=?1 AND event_id=?2", params![job_id,event_id], |row| row.get(0)).unwrap();
+        let links: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM render_job_events WHERE job_id=?1 AND event_id=?2",
+                params![job_id, event_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(links, 1);
     }
 

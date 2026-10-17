@@ -1,0 +1,48 @@
+import path from 'node:path';
+import fs from 'fs-extra';
+import type { Sequence } from 'csdm/common/types/sequence';
+import { getSequenceOutputFilePath } from 'csdm/node/video/generation/get-sequence-output-file-path';
+import { executeFfmpeg } from 'csdm/node/video/ffmpeg/execute-ffmpeg';
+import type { VideoContainer } from 'csdm/common/types/video-container';
+import { getAppFolderPath } from 'csdm/node/filesystem/get-app-folder-path';
+import { sortSequencesByNumber } from 'csdm/common/video/sequences/sort-sequences-by-number';
+
+type ConcatenateVideoOptions = {
+  ffmpegExecutablePath: string;
+  sequences: Sequence[];
+  outputFolderPath: string;
+  videoContainer: VideoContainer;
+  fileName: string;
+};
+
+export async function concatenateVideosFromSequences(
+  { ffmpegExecutablePath, sequences, outputFolderPath, videoContainer, fileName }: ConcatenateVideoOptions,
+  signal: AbortSignal,
+) {
+  const sortedSequences = sortSequencesByNumber(sequences);
+  const videoPaths = sortedSequences.map((sequence) => {
+    return getSequenceOutputFilePath(outputFolderPath, sequence, videoContainer);
+  });
+  const listFilePath = path.join(getAppFolderPath(), 'videos.txt');
+  await fs.writeFile(
+    listFilePath,
+    videoPaths
+      .map((path) => {
+        return `file '${path}'`;
+      })
+      .join('\n'),
+    'utf8',
+  );
+
+  const args = [
+    '-y', // override the file if it exists
+    '-f concat',
+    '-safe 0',
+    `-i "${listFilePath}"`,
+    '-c copy',
+    `"${path.join(outputFolderPath, `${fileName}.${videoContainer}`)}"`,
+  ];
+  await executeFfmpeg(ffmpegExecutablePath, args, signal);
+
+  await Promise.all(videoPaths.map((videoPath) => fs.remove(videoPath)));
+}

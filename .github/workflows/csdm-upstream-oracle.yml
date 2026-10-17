@@ -1,0 +1,127 @@
+name: Pinned CSDM analyzer comparison
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/csdm-upstream-oracle.yml'
+      - 'src/native_grenade_parser.rs'
+      - 'src/analysis/mod.rs'
+      - 'src/db/**'
+      - 'tests/csdm_oracle_inventory.py'
+      - 'tests/csdm_position_oracle.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upstream-oracle-discovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      DEMO_ROUND_DIAGNOSTICS: '1'
+      DEMO_HEALTH_DIAGNOSTICS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out exact CSDM 3.20.1 analyzer source
+        uses: actions/checkout@v4
+        with:
+          repository: akiver/cs-demo-analyzer
+          ref: 61a1208e71a00255846a7e0e829405052c11c7cd
+          path: csda-oracle-source
+          persist-credentials: false
+      - name: Verify analyzer source pin
+        shell: bash
+        run: test "$(git -C csda-oracle-source rev-parse HEAD)" = 61a1208e71a00255846a7e0e829405052c11c7cd
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: csda-oracle-source/go.mod
+      - name: Build pinned independent analyzer on hosted runner
+        working-directory: csda-oracle-source
+        shell: bash
+        run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o "$RUNNER_TEMP/csda" ./cmd/cli
+      - name: Fetch bounded public CS2 recording
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="$RUNNER_TEMP/public-cs2-fixture.dem"
+          curl --fail --location --retry 2 --max-filesize 65000000 --max-time 180 \
+            --output "$fixture" \
+            'https://raw.githubusercontent.com/LaihoE/demoparser/45ca85aeac8fb0de9d385124d2c7fe0e7b8ff0c8/src/parser/test_demo.dem'
+          test "$(wc -c < "$fixture")" -eq 60601900
+          test "$(git hash-object "$fixture")" = e5cc97203262ab36bb756514b02d56eb6bd972a0
+          python -c 'import pathlib,os; p=pathlib.Path(os.environ["RUNNER_TEMP"])/"public-cs2-fixture.dem"; assert p.open("rb").read(8)==b"PBDEMS2\0"'
+      - name: Export original analyzer facts without positions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/csdm-oracle"
+          "$RUNNER_TEMP/csda" -demo-path="$RUNNER_TEMP/public-cs2-fixture.dem" \
+            -output="$RUNNER_TEMP/csdm-oracle" -format=json -minify
+      - name: Import same bytes through DemoStrike native decoder
+        shell: bash
+        run: cargo run --locked --bin demostrike-cli -- import-demo "$RUNNER_TEMP/public-cs2-fixture.dem" "$RUNNER_TEMP/oracle-demostrike.sqlite"
+      - name: Inventory both outputs for explicit reviewed field mapping
+        run: python tests/csdm_oracle_inventory.py
+      - name: Export original analyzer position frames to hosted temporary storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/csdm-position-oracle"
+          "$RUNNER_TEMP/csda" -demo-path="$RUNNER_TEMP/public-cs2-fixture.dem" \
+            -output="$RUNNER_TEMP/csdm-position-oracle" -format=csv -positions
+      - name: Compare native frame positions to pinned original analyzer
+        run: python tests/csdm_position_oracle.py
+      - name: Fetch second public CS2 recording with bounded transient storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ancient"
+          fixture="$RUNNER_TEMP/ancient/public-cs2-fixture.dem"
+          curl --fail --location --retry 2 --max-filesize 350000000 --max-time 600 \
+            --output "$fixture" 'https://api.figshare.com/v2/file/download/52456259'
+          test "$(sha256sum "$fixture" | cut -d' ' -f1)" = b29a9cb537a181deef97b15cfed10ee722a37999644a27bb2226fdd77a1337fc
+          python -c 'import pathlib,os; p=pathlib.Path(os.environ["RUNNER_TEMP"])/"ancient/public-cs2-fixture.dem"; assert p.open("rb").read(8)==b"PBDEMS2\0"; print(f"Ancient source bytes: {p.stat().st_size}")'
+      - name: Analyze second public recording with same pinned CSDM binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ancient/csdm-oracle"
+          "$RUNNER_TEMP/csda" -demo-path="$RUNNER_TEMP/ancient/public-cs2-fixture.dem" \
+            -output="$RUNNER_TEMP/ancient/csdm-oracle" -format=json -minify
+      - name: Import second public recording through same DemoStrike decoder
+        shell: bash
+        run: cargo run --locked --bin demostrike-cli -- import-demo "$RUNNER_TEMP/ancient/public-cs2-fixture.dem" "$RUNNER_TEMP/ancient/oracle-demostrike.sqlite"
+      - name: Compare second public recording
+        env:
+          ORACLE_RUN_ROOT: ${{ runner.temp }}/ancient
+        run: python tests/csdm_oracle_inventory.py
+      - name: Export second recording position frames to hosted temporary storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ancient/csdm-position-oracle"
+          "$RUNNER_TEMP/csda" -demo-path="$RUNNER_TEMP/ancient/public-cs2-fixture.dem" \
+            -output="$RUNNER_TEMP/ancient/csdm-position-oracle" -format=csv -positions
+      - name: Compare second recording positions and projectile paths
+        env:
+          ORACLE_RUN_ROOT: ${{ runner.temp }}/ancient
+        run: python tests/csdm_position_oracle.py
+      - name: Upload public-demo oracle discovery output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: csdm-oracle-discovery
+          path: |
+            ${{ runner.temp }}/csdm-oracle-inventory.json
+            ${{ runner.temp }}/csdm-oracle-comparison.json
+            ${{ runner.temp }}/csdm-position-comparison.json
+            ${{ runner.temp }}/csdm-oracle/*.json
+            ${{ runner.temp }}/ancient/csdm-oracle-inventory.json
+            ${{ runner.temp }}/ancient/csdm-oracle-comparison.json
+            ${{ runner.temp }}/ancient/csdm-position-comparison.json
+            ${{ runner.temp }}/ancient/csdm-oracle/*.json
+          if-no-files-found: warn
+          retention-days: 1

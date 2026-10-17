@@ -1,0 +1,39 @@
+import { sql } from 'kysely';
+import { throwErrorMessage } from 'csdm/server/handlers/throw-error-message';
+import { server } from 'csdm/server/server';
+import { ServerPushMessageName } from 'csdm/server/messages/server-push-message-name';
+import { deletePositions } from 'csdm/node/database/delete-positions';
+import { deleteOrphanDemoPaths } from 'csdm/node/database/demos/delete-orphan-demo-paths';
+import { deleteDemos } from 'csdm/node/database/demos/delete-demos';
+import { db } from 'csdm/node/database/database';
+
+export type OptimizeDatabasePayload = {
+  clearPositions: boolean;
+  clearOrphanDemos: boolean;
+  clearDemos: boolean;
+};
+
+export async function optimizeDatabaseHandler({
+  clearPositions,
+  clearOrphanDemos,
+  clearDemos,
+}: OptimizeDatabasePayload) {
+  try {
+    if (clearDemos) {
+      await deleteDemos();
+    } else if (clearOrphanDemos) {
+      await deleteOrphanDemoPaths();
+    }
+
+    if (clearPositions) {
+      await deletePositions();
+      await sql`VACUUM FULL`.execute(db);
+    }
+
+    server.sendPushMessage({
+      name: ServerPushMessageName.OptimizeDatabaseSuccess,
+    });
+  } catch (error) {
+    throwErrorMessage(error, 'Error while optimizing database');
+  }
+}

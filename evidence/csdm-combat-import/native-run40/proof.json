@@ -1,0 +1,33 @@
+{
+  "source": "actual hosted Tauri WebView2 window with original CS Demo Manager renderer",
+  "data": "synthetic facts imported through the production UI/transaction behind a smoke-only parser feature, plus a separate sanitized read-only library",
+  "scope": "original CSDM shell and table engine with native import route and data-limited combat, rounds, players, and demo-folder routes; real demo decoding is not proven by this synthetic smoke",
+  "commit": "92e4328e3dc9c8027c026c8e4517188406f9560f",
+  "executableSha256": "ad885bd170e12ab47120f212ab69e21e918c213b87b678f31d8b9307e5e73a46",
+  "screenshotSha256": "f0984eb2dbe3e1a2d3a09e5a348142f3178fa901e105ed29a7b9356e1dea40d3",
+  "importedMatchesScreenshotSha256": "542b6a68366f8af79dbfec65681d7e7c74e78f5fd424e7a47a3332937d99c82a",
+  "importedOverviewScreenshotSha256": "3905cf03525616c62fe26e3ae60c3aaef111d1c64499403c91c3f996ec406e0b",
+  "importedRoundsScreenshotSha256": "45d78ee40f29a70b40477ddc1b573bea1b2ea3b39dcf33cb935861d1943810b0",
+  "importedPlayersScreenshotSha256": "6560a8826667e32c74f44ecb973d824efd3c53312b29a37c878e6b59b5e122c3",
+  "importedPlayerDetailScreenshotSha256": "085c019f9ad9b20bb5344db8b19b86e5214b1a8e2d037e85e159a7751d3de2f6",
+  "syntheticImportDemoSha256": "5a0599881a3151bab9db054749022de13c2d0604f2d9797a930ccbceab5d63b9",
+  "matchesScreenshotSha256": "4cc2d8bb831ea7aa306a317c51131de0e92b577c7e66be5a52d6bc215f3c4cd1",
+  "overviewScreenshotSha256": "f16696ed60fb80f562a673860232cdeec89ddd3ef32fbf464c29e00b94856a8c",
+  "roundsScreenshotSha256": "f127054c67a6ccc555078f7e0be841fb630da5b07ef3e628ffac1fef40f91a1b",
+  "playersScreenshotSha256": "4703c01f591e49eaf95baca0680dfa858f5f6e8456dff98731323ef34abd4b2e",
+  "utilityScreenshotSha256": "9963f4613ad210f080ecfd53cdd8ff2493a840ce02a3c1e9d4c609482547a666",
+  "unsupportedScreenshotSha256": "a8a250b86bafd15c73b89687ee3d5c1340993220fa70c6ecc5bb3af9e644e831",
+  "demoFolderScreenshotSha256": "34f0bfb43727e597a5bae672725ead98c7bcc1541afda919f5977df39e59f3a6",
+  "syntheticDemoHashes": [
+    "ced30e5be697d69eae6f2913221cd7265b5377d74bdc3101e99bcc5fc9e51d22",
+    "6537d2dfd1ce8f419d19ad404a27572db417cbd12e666bb0555f3fe1254523bd"
+  ],
+  "fixtureSha256": "edcc9063ed5d29f0b1b7ae3143edd381b308228d3835ca9e1fce89542be37337",
+  "runtimeUrl": "http://tauri.localhost/#/demos",
+  "originalSidebarRoutes": [
+    "matches",
+    "demos",
+    "players",
+    "teams"
+  ]
+}

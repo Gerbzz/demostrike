@@ -10,18 +10,22 @@ pub enum ParserCapabilities {
     GrenadeAnalysisOnlyV1,
     #[serde(rename = "native-combat-flash-v1")]
     NativeCombatFlashV1,
+    #[serde(rename = "native-combat-full-v2")]
+    NativeCombatFullV2,
+    #[serde(rename = "test-synthetic-combat-v1")]
+    TestSyntheticCombatV1,
 }
 
 impl ParserCapabilities {
     pub fn key(self) -> &'static str {
-        match self { Self::ReferenceRawFacts => "reference-raw-facts", Self::GrenadeAnalysisOnlyV1 => "grenade-only-v1", Self::NativeCombatFlashV1 => "native-combat-flash-v1" }
+        match self { Self::ReferenceRawFacts => "reference-raw-facts", Self::GrenadeAnalysisOnlyV1 => "grenade-only-v1", Self::NativeCombatFlashV1 => "native-combat-flash-v1", Self::NativeCombatFullV2 => "native-combat-full-v2", Self::TestSyntheticCombatV1 => "test-synthetic-combat-v1" }
     }
     pub fn from_key(key: &str) -> Option<Self> {
-        match key { "reference-raw-facts" => Some(Self::ReferenceRawFacts), "grenade-only-v1" => Some(Self::GrenadeAnalysisOnlyV1), "native-combat-flash-v1" => Some(Self::NativeCombatFlashV1), _ => None }
+        match key { "reference-raw-facts" => Some(Self::ReferenceRawFacts), "grenade-only-v1" => Some(Self::GrenadeAnalysisOnlyV1), "native-combat-flash-v1" => Some(Self::NativeCombatFlashV1), "native-combat-full-v2" => Some(Self::NativeCombatFullV2), "test-synthetic-combat-v1" => Some(Self::TestSyntheticCombatV1), _ => None }
     }
-    pub fn supports_combat(self) -> bool { matches!(self, Self::ReferenceRawFacts | Self::NativeCombatFlashV1) }
+    pub fn supports_combat(self) -> bool { matches!(self, Self::ReferenceRawFacts | Self::NativeCombatFlashV1 | Self::NativeCombatFullV2 | Self::TestSyntheticCombatV1) }
     pub fn supports_economy(self) -> bool { matches!(self, Self::ReferenceRawFacts) }
-    pub fn is_native(self) -> bool { !matches!(self, Self::ReferenceRawFacts) }
+    pub fn is_native(self) -> bool { !matches!(self, Self::ReferenceRawFacts | Self::TestSyntheticCombatV1) }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

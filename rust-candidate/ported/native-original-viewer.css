@@ -1,0 +1,9 @@
+/* Keep CSDM's map and controls; narrow its overlay at the shipped 1024px
+   window so the factual roster does not cover a third of the radar. */
+@media (max-width: 1200px) {
+  .original-viewer-bridge .absolute.left-8.top-8 {
+    width: min(260px, 38vw);
+    max-height: calc(100% - 16px);
+    overflow-y: auto;
+  }
+}

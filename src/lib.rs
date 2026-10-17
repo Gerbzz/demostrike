@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod db;
 pub mod demo_import;
 pub mod capture_request;
+pub mod edit_handoff;
 pub mod capture_project;
 pub mod capture_receipt;
 pub mod capture_qc;

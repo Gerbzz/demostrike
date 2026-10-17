@@ -191,6 +191,123 @@ const MIGRATIONS: &[&str] = &[
            e.nearby_players, e.round_winner, e.favorite
     FROM utility_events e JOIN matches m ON m.id = e.match_id;
     "#,
+    // v7 - complete native combat is independent of utility attribution.
+    // Nullable metrics preserve unknown side attribution. Older imported
+    // matches remain unchanged and cannot claim this coverage version.
+    r#"
+    CREATE TABLE player_round_combat (
+        match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+        round_number INTEGER NOT NULL,
+        steamid TEXT NOT NULL,
+        side TEXT CHECK (side IN ('CT','T') OR side IS NULL),
+        enemy_kills INTEGER,
+        deaths INTEGER NOT NULL,
+        enemy_assists INTEGER,
+        enemy_health_damage INTEGER,
+        PRIMARY KEY (match_id, round_number, steamid)
+    );
+    CREATE INDEX player_round_combat_player ON player_round_combat(match_id, steamid);
+    "#,
+    // v8 - keep event-level combat for future original CSDM workflows.
+    // Additive tables leave prior matches, utility annotations, and render
+    // references untouched; old imports do not acquire invented event rows.
+    r#"
+    CREATE TABLE raw_combat_hurts (
+        match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+        source_index INTEGER NOT NULL,
+        event_order INTEGER,
+        tick INTEGER NOT NULL,
+        round_number INTEGER NOT NULL,
+        weapon TEXT,
+        attacker_steamid TEXT,
+        attacker_side TEXT,
+        victim_steamid TEXT NOT NULL,
+        victim_side TEXT,
+        raw_dmg_health INTEGER NOT NULL,
+        PRIMARY KEY (match_id, source_index)
+    );
+    CREATE INDEX raw_combat_hurts_timeline ON raw_combat_hurts(match_id, tick, event_order);
+    CREATE TABLE raw_combat_deaths (
+        match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+        source_index INTEGER NOT NULL,
+        event_order INTEGER,
+        tick INTEGER NOT NULL,
+        round_number INTEGER NOT NULL,
+        weapon TEXT,
+        attacker_steamid TEXT,
+        attacker_side TEXT,
+        victim_steamid TEXT NOT NULL,
+        victim_side TEXT,
+        assister_steamid TEXT,
+        assister_side TEXT,
+        PRIMARY KEY (match_id, source_index)
+    );
+    CREATE INDEX raw_combat_deaths_timeline ON raw_combat_deaths(match_id, tick, event_order);
+    "#,
+    // v9 - preserve effective HP alongside the raw source value. Existing
+    // imports remain unknown; migration never fabricates health or team facts.
+    r#"
+    ALTER TABLE raw_combat_hurts ADD COLUMN post_health INTEGER;
+    ALTER TABLE raw_combat_hurts ADD COLUMN start_health INTEGER;
+    ALTER TABLE raw_combat_hurts ADD COLUMN effective_health_damage INTEGER
+        CHECK (effective_health_damage >= 0 OR effective_health_damage IS NULL);
+    ALTER TABLE player_round_combat ADD COLUMN effective_enemy_health_damage INTEGER
+        CHECK (effective_enemy_health_damage >= 0 OR effective_enemy_health_damage IS NULL);
+    ALTER TABLE rounds ADD COLUMN team_a_side TEXT CHECK (team_a_side IN ('CT','T') OR team_a_side IS NULL);
+    ALTER TABLE rounds ADD COLUMN team_b_side TEXT CHECK (team_b_side IN ('CT','T') OR team_b_side IS NULL);
+    ALTER TABLE player_round_combat ADD COLUMN stable_team TEXT
+        CHECK (stable_team IN ('A','B') OR stable_team IS NULL);
+    "#,
+    // v10 - absolute-tick frame samples for the bounded native 2D viewer.
+    // Older rows remain unavailable; migration never infers a trajectory.
+    r#"
+    ALTER TABLE matches ADD COLUMN viewer_position_version INTEGER;
+    CREATE TABLE viewer_player_positions (
+        match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+        round_number INTEGER NOT NULL,
+        tick INTEGER NOT NULL,
+        steamid TEXT NOT NULL,
+        name TEXT NOT NULL,
+        side TEXT,
+        x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL,
+        is_alive INTEGER,
+        health INTEGER,
+        yaw REAL,
+        PRIMARY KEY (match_id, round_number, tick, steamid)
+    );
+    CREATE INDEX viewer_player_tick ON viewer_player_positions(match_id, round_number, tick);
+    CREATE TABLE viewer_grenade_positions (
+        match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+        round_number INTEGER NOT NULL,
+        tick INTEGER NOT NULL,
+        trajectory_index INTEGER NOT NULL,
+        entity_id INTEGER NOT NULL,
+        grenade_type TEXT,
+        thrower_steamid TEXT,
+        x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL,
+        PRIMARY KEY (match_id, trajectory_index, tick)
+    );
+    CREATE INDEX viewer_grenade_tick ON viewer_grenade_positions(match_id, round_number, tick);
+    "#,
+    // v11 - exact observed bomb game events for the original viewer timeline.
+    // Legacy imports retain an empty stream until reimported; no site or
+    // position is inferred by migration.
+    r#"
+    ALTER TABLE matches ADD COLUMN viewer_bomb_version INTEGER;
+    CREATE TABLE viewer_bomb_events (
+        match_id INTEGER NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+        source_index INTEGER NOT NULL,
+        round_number INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('bomb_planted','bomb_defused','bomb_exploded')),
+        tick INTEGER NOT NULL,
+        actor_steamid TEXT,
+        actor_name TEXT,
+        site_id INTEGER,
+        x REAL, y REAL, z REAL,
+        PRIMARY KEY (match_id, source_index)
+    );
+    CREATE INDEX viewer_bomb_tick ON viewer_bomb_events(match_id, round_number, tick);
+    "#,
 ];
 
 pub fn open(path: &Path) -> AppResult<Connection> {
@@ -221,7 +338,9 @@ fn configure(conn: &Connection) -> AppResult<()> {
 fn migrate(conn: &Connection) -> AppResult<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version > MIGRATIONS.len() as i64 {
-        return Err(AppError::Invalid(format!("DemoStrike database schema {version} is newer than this build supports")));
+        return Err(AppError::Invalid(format!(
+            "DemoStrike database schema {version} is newer than this build supports"
+        )));
     }
     for (i, sql) in MIGRATIONS.iter().enumerate() {
         let target = (i + 1) as i64;
@@ -244,7 +363,9 @@ mod capability_migration_tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA user_version = 99;").unwrap();
         assert!(migrate(&conn).unwrap_err().to_string().contains("newer"));
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(version, 99);
     }
 
@@ -258,25 +379,205 @@ mod capability_migration_tests {
         conn.execute("INSERT INTO matches (id,file_path,file_name,map_name,tick_rate,imported_at) VALUES (7,'C:/old.dem','old.dem','de_train',64,'2026-10-08')", []).unwrap();
         conn.execute("INSERT INTO utility_events (id,match_id,round_number,utility_type,thrower_steamid,thrower_name,thrower_team,throw_tick,throw_x,throw_y,throw_z,favorite) VALUES (9,7,1,'smoke','123','player','CT',100,1,2,3,1)", []).unwrap();
         migrate(&conn).unwrap();
-        let capability: String = conn.query_row("SELECT parser_capability FROM matches WHERE id=7", [], |r| r.get(0)).unwrap();
-        let source_hash: Option<String> = conn.query_row("SELECT source_sha256 FROM matches WHERE id=7", [], |r| r.get(0)).unwrap();
-        let favorite: i64 = conn.query_row("SELECT favorite FROM utility_events WHERE id=9", [], |r| r.get(0)).unwrap();
+        let capability: String = conn
+            .query_row(
+                "SELECT parser_capability FROM matches WHERE id=7",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let source_hash: Option<String> = conn
+            .query_row("SELECT source_sha256 FROM matches WHERE id=7", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let favorite: i64 = conn
+            .query_row("SELECT favorite FROM utility_events WHERE id=9", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(capability, "reference-raw-facts");
         assert_eq!(source_hash, None);
         assert_eq!(favorite, 1);
         let events = queries::query_events(&conn, &Default::default()).unwrap();
-        assert_eq!(events[0].parser_capability, crate::domain::ParserCapabilities::ReferenceRawFacts);
+        assert_eq!(
+            events[0].parser_capability,
+            crate::domain::ParserCapabilities::ReferenceRawFacts
+        );
         assert_eq!(events[0].damage_enemy, None);
-        let legacy_damage: Option<i64> = conn.query_row("SELECT damage_enemy FROM utility_events_supported WHERE id=9", [], |r| r.get(0)).unwrap();
+        let legacy_damage: Option<i64> = conn
+            .query_row(
+                "SELECT damage_enemy FROM utility_events_supported WHERE id=9",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(legacy_damage, None);
-        conn.execute("UPDATE matches SET parser_capability='grenade-only-v1' WHERE id=7", []).unwrap();
-        let native_damage: Option<i64> = conn.query_row("SELECT damage_enemy FROM utility_events_supported WHERE id=9", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "UPDATE matches SET parser_capability='grenade-only-v1' WHERE id=7",
+            [],
+        )
+        .unwrap();
+        let native_damage: Option<i64> = conn
+            .query_row(
+                "SELECT damage_enemy FROM utility_events_supported WHERE id=9",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(native_damage, None);
-        conn.execute("UPDATE matches SET parser_capability='native-combat-flash-v1' WHERE id=7", []).unwrap();
-        let measured_damage: Option<i64> = conn.query_row("SELECT damage_enemy FROM utility_events_supported WHERE id=9", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "UPDATE matches SET parser_capability='native-combat-flash-v1' WHERE id=7",
+            [],
+        )
+        .unwrap();
+        let measured_damage: Option<i64> = conn
+            .query_row(
+                "SELECT damage_enemy FROM utility_events_supported WHERE id=9",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(measured_damage, None);
         let detail = queries::get_event_detail(&conn, 9).unwrap();
         assert_eq!(detail.damage_team, None);
         assert_eq!(detail.ct_equip_value, None);
+    }
+
+    #[test]
+    fn v8_combat_migrates_without_inventing_effective_hp_or_team() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        for sql in &MIGRATIONS[..8] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 8).unwrap();
+        conn.execute_batch("INSERT INTO matches
+            (id,file_path,file_name,map_name,tick_rate,imported_at,parser_capability)
+            VALUES (7,'C:/old.dem','old.dem','de_mirage',64,'2026-10-08','native-combat-full-v2');
+            INSERT INTO rounds (match_id,round_number,start_tick) VALUES (7,1,100);
+            INSERT INTO player_round_combat
+            (match_id,round_number,steamid,side,enemy_kills,deaths,enemy_assists,enemy_health_damage)
+            VALUES (7,1,'s1','CT',1,0,0,140);
+            INSERT INTO raw_combat_hurts
+            (match_id,source_index,tick,round_number,victim_steamid,raw_dmg_health)
+            VALUES (7,0,200,1,'s2',140);").unwrap();
+        migrate(&conn).unwrap();
+        let damage: (i64, Option<i64>, Option<i64>) = conn.query_row(
+            "SELECT raw_dmg_health, effective_health_damage, post_health FROM raw_combat_hurts WHERE match_id=7",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        let totals: (i64, Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT enemy_health_damage, effective_enemy_health_damage, stable_team
+             FROM player_round_combat WHERE match_id=7",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let team_a: Option<String> = conn
+            .query_row(
+                "SELECT team_a_side FROM rounds WHERE match_id=7",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let viewer_version: Option<i64> = conn
+            .query_row(
+                "SELECT viewer_position_version FROM matches WHERE id=7",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let viewer_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM viewer_player_positions WHERE match_id=7",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(damage, (140, None, None));
+        assert_eq!(totals, (140, None, None));
+        assert_eq!(team_a, None);
+        assert_eq!(viewer_version, None);
+        assert_eq!(viewer_rows, 0);
+    }
+
+    #[test]
+    fn v6_import_migrates_without_inventing_combat_or_replacing_annotations() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        for sql in &MIGRATIONS[..6] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 6).unwrap();
+        conn.execute("INSERT INTO matches (id,file_path,file_name,map_name,tick_rate,imported_at,parser_capability)
+            VALUES (7,'C:/old.dem','old.dem','de_train',64,'2026-10-08','native-combat-flash-v1')", []).unwrap();
+        conn.execute(
+            "INSERT INTO players (match_id,steamid,name) VALUES (7,'s1','preserved')",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO utility_events
+            (id,match_id,round_number,utility_type,thrower_steamid,thrower_name,thrower_team,
+             throw_tick,throw_x,throw_y,throw_z,favorite)
+            VALUES (9,7,1,'smoke','s1','preserved','CT',100,1,2,3,1);
+            INSERT INTO tags (id,name) VALUES (3,'approved');
+            INSERT INTO event_tags (event_id,tag_id) VALUES (9,3);
+            INSERT INTO collections (id,name,created_at) VALUES (4,'Guide','2026-10-08');
+            INSERT INTO collection_events (collection_id,event_id,position) VALUES (4,9,0);
+            INSERT INTO render_jobs (id,status,settings,output_dir,created_at)
+              VALUES (5,'queued','{}','C:/output','2026-10-08');
+            INSERT INTO render_job_events (job_id,event_id,position) VALUES (5,9,0);",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        let player: String = conn
+            .query_row("SELECT name FROM players WHERE match_id=7", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let combat: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM player_round_combat WHERE match_id=7",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let raw_combat: i64 = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM raw_combat_hurts WHERE match_id=7)
+            + (SELECT COUNT(*) FROM raw_combat_deaths WHERE match_id=7)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let bomb_capability: Option<i64> = conn
+            .query_row(
+                "SELECT viewer_bomb_version FROM matches WHERE id=7",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let annotations: (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT e.favorite,
+                (SELECT COUNT(*) FROM event_tags WHERE event_id=e.id),
+                (SELECT COUNT(*) FROM collection_events WHERE event_id=e.id),
+                (SELECT COUNT(*) FROM render_job_events WHERE event_id=e.id)
+             FROM utility_events e WHERE e.id=9",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(version, 11);
+        assert_eq!(bomb_capability, None);
+        assert_eq!(player, "preserved");
+        assert_eq!(combat, 0);
+        assert_eq!(raw_combat, 0);
+        assert_eq!(annotations, (1, 1, 1, 1));
     }
 }

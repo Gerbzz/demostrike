@@ -1,0 +1,20 @@
+{
+  "productName": "DemoStrike CS Demo Manager Port",
+  "identifier": "com.demostrike.csdmport",
+  "build": {
+    "beforeBuildCommand": "",
+    "frontendDist": "../ported/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "DemoStrike CS Demo Manager Port",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 880,
+        "minHeight": 600
+      }
+    ],
+    "security": { "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'" }
+  }
+}

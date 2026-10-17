@@ -1,0 +1,5 @@
+/* Build the original design system while scanning the preserved source tree.
+   Tailwind's default scan starts at the ported Vite working directory. */
+@import '../upstream/cs-demo-manager/src/ui/index.css';
+@source '../upstream/cs-demo-manager/src/ui';
+@source './';

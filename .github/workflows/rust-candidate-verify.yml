@@ -11,6 +11,131 @@ permissions:
   contents: read
 
 jobs:
+  original-native:
+    needs: upstream-renderer
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: rust-candidate
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install hosted tooling
+        run: npm ci --no-audit --no-fund
+      - name: Download verified original renderer bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: csdm-ported-renderer
+          path: rust-candidate/ported/dist
+      - name: Build native original renderer host
+        run: npm run tauri -- build --config src-tauri/tauri.upstream.smoke.conf.json --features synthetic-import-smoke
+      - name: Generate sanitized synthetic library
+        run: python tests/make_smoke_fixture.py
+      - name: Exercise original startup and capture native app
+        run: node tests/original-native-smoke.cjs
+        env:
+          DEMOSTRIKE_SYNTHETIC_RAW_FACTS: ${{ github.workspace }}/rust-candidate/tests/fixtures/combat-raw.json
+      - name: Rebuild release host without synthetic parser feature
+        run: npm run tauri -- build --config src-tauri/tauri.upstream.smoke.conf.json
+      - name: Fetch pinned public CS2 demo for real native UI import
+        shell: pwsh
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP 'public-cs2-fixture.dem'
+          curl.exe --fail --location --retry 2 --max-filesize 65000000 --max-time 180 --output $fixture 'https://raw.githubusercontent.com/LaihoE/demoparser/45ca85aeac8fb0de9d385124d2c7fe0e7b8ff0c8/src/parser/test_demo.dem'
+          if ($LASTEXITCODE -ne 0) { throw 'Public fixture download failed' }
+          if ((Get-Item -LiteralPath $fixture).Length -ne 60601900) { throw 'Public fixture size changed' }
+          if ((git hash-object -- $fixture) -ne 'e5cc97203262ab36bb756514b02d56eb6bd972a0') { throw 'Public fixture content changed' }
+      - name: Fetch hash-pinned public CSDM radar for transient native capture
+        shell: pwsh
+        run: |
+          $radar = Join-Path $env:RUNNER_TEMP 'de_mirage-radar.png'
+          curl.exe --fail --location --retry 2 --max-filesize 200000 --max-time 60 --output $radar 'https://raw.githubusercontent.com/akiver/cs-demo-manager/7270bc95c8cab87b7f9ddd490fea13c6eda3ace7/static/images/maps/cs2/radars/de_mirage.png'
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned CSDM radar download failed' }
+          if ((Get-Item -LiteralPath $radar).Length -ne 144543) { throw 'Pinned CSDM radar size changed' }
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $radar).Hash.ToLowerInvariant() -ne 'af139a92cf929214f7c0ac35e2d8c82bad385d83e71eeaf7b955dac96467a136') { throw 'Pinned CSDM radar content changed' }
+      - name: Import public demo in actual Tauri WebView2 window
+        run: node tests/public-native-smoke.cjs
+        env:
+          EXPECT_FEATURE_FREE: '1'
+          CSDM_PUBLIC_RADAR_PATH: ${{ runner.temp }}/de_mirage-radar.png
+      - name: Fetch licensed Ancient demo for restart acceptance
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'ancient'
+          New-Item -ItemType Directory -Force -Path $directory | Out-Null
+          $fixture = Join-Path $directory 'public-cs2-fixture.dem'
+          curl.exe --fail --location --retry 2 --max-filesize 350000000 --max-time 600 --output $fixture 'https://api.figshare.com/v2/file/download/52456259'
+          if ($LASTEXITCODE -ne 0) { throw 'Ancient fixture download failed' }
+          if ((Get-Item -LiteralPath $fixture).Length -ne 112473210) { throw 'Ancient fixture size changed' }
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $fixture).Hash.ToLowerInvariant() -ne 'b29a9cb537a181deef97b15cfed10ee722a37999644a27bb2226fdd77a1337fc') { throw 'Ancient fixture content changed' }
+      - name: Interrupt real import and verify recovery after process restart
+        run: node tests/import-queue-restart.cjs
+        env:
+          EXPECT_FEATURE_FREE: '1'
+      - name: Upload original app-only capture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demostrike-original-native-startup
+          path: ${{ runner.temp }}/demostrike-original/*
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Upload real-demo app-only capture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demostrike-public-native-ui
+          path: ${{ runner.temp }}/demostrike-public-native/*
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Upload native queue restart evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demostrike-queue-restart
+          path: ${{ runner.temp }}/demostrike-queue-restart/*
+          if-no-files-found: warn
+          retention-days: 1
+  upstream-renderer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: rust-candidate/upstream/cs-demo-manager
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install pinned upstream package manager
+        run: npm install --global pnpm@12.6.0 --ignore-scripts --no-audit --no-fund
+      - name: Install original renderer dependencies without native postinstall
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Compile original CS Demo Manager renderer source
+        run: |
+          mkdir -p static
+          ./node_modules/.bin/vp build --config vite.config.ts
+      - name: Compile original routes with Tauri startup adapters
+        run: ./node_modules/.bin/vp build --config ../../ported/vite.config.mjs
+      - name: Verify ported transport is in the renderer bundle
+        working-directory: rust-candidate
+        run: node tests/check-ported-bundle.cjs
+      - name: Test original settings update contract
+        working-directory: rust-candidate
+        run: node tests/settings-merge.test.mjs
+      - name: Share renderer bundle with hosted native job
+        uses: actions/upload-artifact@v4
+        with:
+          name: csdm-ported-renderer
+          path: rust-candidate/ported/dist
+          if-no-files-found: error
+          retention-days: 1
   verify:
     runs-on: windows-latest
     timeout-minutes: 90
@@ -25,6 +150,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Verify pinned upstream source baseline
+        run: python tests/check_upstream_snapshot.py
       - name: Install frontend dependencies on hosted runner
         run: npm ci --no-audit --no-fund
       - name: Typecheck and build frontend
@@ -37,6 +164,8 @@ jobs:
         run: python tests/check_smoke_config.py
       - name: Run Rust tests
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --all-targets -- --test-threads=1
+      - name: Test DemoStrike native parser and import core
+        run: cargo test --locked --manifest-path ../Cargo.toml --lib -- --test-threads=1
       - name: Compile native application
         run: npm run tauri -- build --config src-tauri/tauri.smoke.conf.json
       - name: Generate sanitized synthetic SQLite fixture
@@ -74,5 +203,50 @@ jobs:
             ${{ runner.temp }}/demostrike-smoke/dependencies-resolved.json
             rust-candidate/package-lock.json
             rust-candidate/src-tauri/Cargo.lock
+          if-no-files-found: warn
+          retention-days: 1
+  editor-runtime:
+    needs: original-native
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download exact public Finder handoff produced by native WebView2
+        uses: actions/download-artifact@v4
+        with:
+          name: demostrike-public-native-ui
+          path: ${{ runner.temp }}/demostrike-editor-input
+      - name: Test legacy marker conversion and combined project capture arguments
+        shell: pwsh
+        run: |
+          cargo test --locked --features native-ui --lib offline_cue_project_opens_and_preserves_markers_after_save -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Legacy cue conversion test failed' }
+          cargo test --locked --features native-ui --bin demostrike -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Native project capture argument tests failed' }
+      - name: Build actual embedded FilmCraft editor and runtime acceptance driver
+        run: cargo build --locked --features native-ui --bin demostrike --bin demostrike-editor-runtime-proof
+      - name: Open exact handoff, place synthetic stills, save and reopen both edits
+        shell: pwsh
+        run: |
+          $handoff = Join-Path $env:RUNNER_TEMP 'demostrike-editor-input/offline-handoff'
+          $output = Join-Path $env:RUNNER_TEMP 'demostrike-editor-runtime'
+          & .\target\debug\demostrike-editor-runtime-proof.exe $handoff $output
+          if ($LASTEXITCODE -ne 0) { throw 'Editor runtime roundtrip failed' }
+      - name: Capture actual editor windows for original and edited projects
+        shell: pwsh
+        run: |
+          $handoff = Join-Path $env:RUNNER_TEMP 'demostrike-editor-input/offline-handoff'
+          $output = Join-Path $env:RUNNER_TEMP 'demostrike-editor-runtime'
+          .\tests\editor_runtime_native.ps1 -HandoffDir $handoff -EvidenceDir $output
+      - name: Upload genuine editor runtime screenshots and proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demostrike-editor-runtime
+          path: ${{ runner.temp }}/demostrike-editor-runtime/*
           if-no-files-found: warn
           retention-days: 1

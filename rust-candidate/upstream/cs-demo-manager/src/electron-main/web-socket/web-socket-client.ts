@@ -1,0 +1,197 @@
+import WebSocket from 'ws';
+import { randomUUID } from 'node:crypto';
+import type {
+  MainServerMessageName,
+  MainServerMessagePayload,
+  MainServerMessageResponse,
+} from 'csdm/server/messages/main-server-message-name';
+import type { MainClientMessageName } from 'csdm/server/messages/main-client-message-name';
+import { getWebSocketServerPort } from 'csdm/server/port';
+import type { IdentifiableClientMessage } from 'csdm/server/messages/identifiable-client-message';
+import { SharedServerMessageName } from 'csdm/server/messages/shared-server-message-name';
+import type { MainMessageHandlers } from 'csdm/server/handlers/main-handlers-mapping';
+import type { SendableMessage } from 'csdm/server/messages/message';
+import { ErrorCode } from 'csdm/common/error-code';
+
+type Listener<MessageName extends MainServerMessageName = MainServerMessageName> = (
+  payload: MainServerMessagePayload[MessageName],
+) =>
+  | (MessageName extends keyof MainServerMessageResponse ? MainServerMessageResponse[MessageName] : void)
+  | Promise<MessageName extends keyof MainServerMessageResponse ? MainServerMessageResponse[MessageName] : void>
+  | void;
+
+type ReplyHandler = {
+  resolve: (payload: unknown) => void;
+  reject: (error: unknown) => void;
+};
+
+export class WebSocketClient {
+  private messageQueue: SendableMessage<MainMessageHandlers>[] = [];
+  private listeners: Map<MainServerMessageName, Listener[]> = new Map();
+  private replyHandlers: Map<string, ReplyHandler> = new Map();
+  private socket!: WebSocket;
+  public isConnected: boolean = false;
+
+  public constructor() {
+    this.connect();
+  }
+
+  public on<MessageName extends MainServerMessageName>(name: MessageName, listener: Listener<MessageName>): void {
+    const listeners = this.listeners.get(name);
+    if (listeners === undefined) {
+      this.listeners.set(name, [listener as Listener]);
+    } else {
+      listeners.push(listener as Listener);
+    }
+  }
+
+  public off<MessageName extends MainServerMessageName>(name: MessageName, listener: Listener<MessageName>): void {
+    const listeners = this.listeners.get(name);
+    if (listeners === undefined) {
+      return;
+    }
+
+    this.listeners.set(
+      name,
+      listeners.filter((cb) => cb !== listener),
+    );
+  }
+
+  public removeAllEventListeners(name: MainServerMessageName): void {
+    this.listeners.set(name, []);
+  }
+
+  /**
+   * Send a message to the WebSocket server.
+   * The promise will be resolved when the reply handler is called, i.e. when this client receives the response.
+   *
+   * You can wait for the response result like this:
+   *   const result = await client.send({ name: 'message-name' });
+   *   console.log(result);
+   * Or you may don't wait the response and use listeners instead:
+   *   const onMessage = (result) => {
+   *     console.log(result);
+   *     client.off('message-name', onMessage);
+   *   }
+   *   client.on('message-name', onMessage);
+   *   client.send({ name: 'message-name' });
+   */
+  public send<MessageName extends MainClientMessageName>(message: SendableMessage<MainMessageHandlers, MessageName>) {
+    return new Promise((resolve: (payload: unknown) => void, reject) => {
+      const uuid = randomUUID();
+      (message as IdentifiableClientMessage<MessageName>).uuid = uuid;
+      this.replyHandlers.set(uuid, { resolve, reject });
+      if (this.isConnected) {
+        this.socket.send(JSON.stringify(message));
+      } else {
+        this.messageQueue.push(message as SendableMessage<MainMessageHandlers>);
+      }
+    }) as ReturnType<MainMessageHandlers[MessageName]>;
+  }
+
+  private connect = () => {
+    logger.log('WS:: connecting to server');
+    const url = `ws://localhost:${getWebSocketServerPort()}?process=main`;
+    this.socket = new WebSocket(url);
+    this.socket.addEventListener('open', this.onConnect);
+    this.socket.addEventListener('error', this.onDisconnect);
+  };
+
+  private onConnect = async (): Promise<void> => {
+    logger.log('WS:: connected');
+    this.isConnected = true;
+    this.socket.addEventListener('message', this.onMessage);
+    this.socket.addEventListener('close', this.onDisconnect);
+    this.socket.addEventListener('error', this.onError);
+    for (const message of this.messageQueue) {
+      await this.send(message);
+    }
+    this.messageQueue = [];
+  };
+
+  private onDisconnect = (): void => {
+    logger.warn('WS:: disconnected');
+    this.isConnected = false;
+    this.connect();
+  };
+
+  private onError = (event: WebSocket.ErrorEvent): void => {
+    logger.error('WS:: error', event);
+    this.isConnected = false;
+  };
+
+  private onMessage = async (messageEvent: WebSocket.MessageEvent): Promise<void> => {
+    try {
+      const message: IdentifiableClientMessage<MainServerMessageName> = JSON.parse(messageEvent.data as string);
+      const { name, payload, uuid } = message;
+
+      switch (name) {
+        case SharedServerMessageName.Reply:
+          {
+            const replyHandler = this.replyHandlers.get(uuid);
+            if (replyHandler) {
+              replyHandler.resolve(payload);
+              this.replyHandlers.delete(uuid);
+            } else {
+              logger.log(`WS:: no reply handler for message with name: "${name}" and uuid ${uuid}`);
+            }
+          }
+          break;
+        case SharedServerMessageName.ReplyError:
+          {
+            const replyHandler = this.replyHandlers.get(uuid);
+            if (replyHandler) {
+              replyHandler.reject(payload);
+              this.replyHandlers.delete(uuid);
+            } else {
+              logger.log(`WS:: no reply handler for message with name: "${name}" and uuid ${uuid}`);
+            }
+          }
+          break;
+        default: {
+          logger.log(`WS:: message "${name}" received from server`);
+          const listeners = this.listeners.get(name);
+          if (listeners) {
+            for (const listener of listeners) {
+              try {
+                const result = await listener(payload);
+                this.socket.send(
+                  JSON.stringify({
+                    name: SharedServerMessageName.Reply,
+                    payload: result,
+                    uuid,
+                  }),
+                );
+              } catch (error) {
+                let payload: ErrorCode | string = ErrorCode.UnknownError;
+                if (typeof error === 'string') {
+                  payload = error;
+                } else if (typeof error === 'number') {
+                  payload = error as ErrorCode;
+                }
+
+                if (typeof payload === 'string' || payload === ErrorCode.UnknownError) {
+                  logger.error(`WS:: error handling message with ${name} from server`);
+                  logger.error(error);
+                }
+
+                this.socket.send(
+                  JSON.stringify({
+                    name: SharedServerMessageName.ReplyError,
+                    payload: error,
+                    uuid,
+                  }),
+                );
+              }
+            }
+          } else {
+            logger.log(`WS:: no listener for message with name: "${name}"`);
+          }
+        }
+      }
+    } catch (error) {
+      logger.error('WS:: Error on message:');
+      logger.error(error);
+    }
+  };
+}

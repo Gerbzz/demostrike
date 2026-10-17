@@ -1,0 +1,22 @@
+{
+  "source": "actual hosted Tauri WebView2 window with original CS Demo Manager renderer",
+  "data": "new empty local SQLite plus a separate sanitized synthetic DemoStrike library",
+  "scope": "original startup and read-only local library; import and other route backends remain unported",
+  "commit": "ad2180782833c5bd111a6940973a77b41bd6b24c",
+  "executableSha256": "6acfd86ccf9a9de9d7aec11bda279a0a563be233a51abd78441d64480146f3aa",
+  "screenshotSha256": "5839526dbd7c3d4b9a1b3410b9d49235f3c24c429ba510ae0fdb973bb7cce758",
+  "libraryScreenshotSha256": "be3aa55ea594bd7cb095d1697aa333d81b8b003c95ffea331df6f8d4d50b81c9",
+  "demoFolderScreenshotSha256": "be5c3ffd51547e7a4b76e29af0202edb74d0c436168848539a79b18846e02467",
+  "syntheticDemoHashes": [
+    "ced30e5be697d69eae6f2913221cd7265b5377d74bdc3101e99bcc5fc9e51d22",
+    "6537d2dfd1ce8f419d19ad404a27572db417cbd12e666bb0555f3fe1254523bd"
+  ],
+  "fixtureSha256": "d0354afdfd0b2a289a1fb088792cacc805072cea0d93e71e0ae6663f1ee45822",
+  "runtimeUrl": "http://tauri.localhost/#/demos",
+  "originalSidebarRoutes": [
+    "matches",
+    "demos",
+    "players",
+    "teams"
+  ]
+}

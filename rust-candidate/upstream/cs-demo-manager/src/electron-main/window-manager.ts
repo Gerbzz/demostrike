@@ -1,0 +1,181 @@
+import path from 'node:path';
+import { BrowserWindow, app, shell } from 'electron';
+import { IPCChannel } from 'csdm/common/ipc-channel';
+import { ArgumentName } from 'csdm/common/argument/argument-name';
+import type { Argument } from 'csdm/common/types/argument';
+import { getArgumentValueFromArray } from 'csdm/electron-main/get-argument-value-from-array';
+import { listenForContextMenu } from 'csdm/electron-main/listen-for-context-menu';
+
+class WindowManager {
+  private mainWindow: BrowserWindow | null = null;
+  private createMainWindowPromise: Promise<BrowserWindow> | null = null;
+  private startupArguments: Argument[] = [];
+
+  public constructor() {
+    for (const argumentName of Object.values(ArgumentName)) {
+      const value = getArgumentValueFromArray(process.argv, argumentName);
+      if (typeof value === 'string') {
+        this.startupArguments.push({
+          name: argumentName,
+          value,
+        });
+      }
+    }
+  }
+
+  public getStartupArguments = () => {
+    return this.startupArguments;
+  };
+
+  public clearStartupArguments = () => {
+    this.startupArguments = [];
+  };
+
+  public setStartupArgument = (argumentName: ArgumentName, value: string) => {
+    const argumentIndex = this.startupArguments.findIndex((arg) => arg.name === argumentName);
+    if (argumentIndex === -1) {
+      this.startupArguments.push({
+        name: argumentName,
+        value,
+      });
+    } else {
+      this.startupArguments[argumentIndex].value = value;
+    }
+  };
+
+  public getOrCreateMainWindow = async () => {
+    if (this.mainWindow !== null && !this.mainWindow.isDestroyed()) {
+      return this.mainWindow;
+    }
+
+    // The window creation is asynchronous and events such as a macOS dock click may be triggered during the creation.
+    // We store the promise to avoid creating multiple windows.
+    if (this.createMainWindowPromise === null) {
+      this.createMainWindowPromise = this.createAndTrackMainWindow();
+    }
+
+    return this.createMainWindowPromise;
+  };
+
+  private async createAndTrackMainWindow() {
+    try {
+      this.mainWindow = await this.createMainWindow();
+
+      return this.mainWindow;
+    } finally {
+      this.createMainWindowPromise = null;
+    }
+  }
+
+  public getMainWindow() {
+    return this.mainWindow;
+  }
+
+  private async createMainWindow() {
+    const mainWindow = new BrowserWindow({
+      // Persist bounds and display mode (maximized, fullscreen...) across restarts, requires a unique window name.
+      name: 'main',
+      windowStatePersistence: true,
+      width: 1024,
+      height: 768,
+      minWidth: 500,
+      minHeight: 400,
+      webPreferences: {
+        preload: path.join(app.getAppPath(), 'preload.js'),
+        sandbox: false,
+        // Disable webSecurity in dev mode only to allow local files access
+        webSecurity: IS_PRODUCTION,
+      },
+      frame: false,
+      titleBarStyle: 'hiddenInset',
+      // Show the window only when the event 'ready-to-show' is triggered in prod mode, it can be useful in dev mode
+      show: IS_DEV,
+      backgroundColor: '#000',
+    });
+
+    mainWindow.on('unmaximize', () => {
+      mainWindow.webContents.send(IPCChannel.WindowUnMaximized);
+    });
+
+    mainWindow.on('maximize', () => {
+      mainWindow.webContents.send(IPCChannel.WindowMaximized);
+    });
+
+    mainWindow.on('close', () => {
+      mainWindow.webContents.send(IPCChannel.WindowClose);
+    });
+
+    mainWindow.on('ready-to-show', () => {
+      mainWindow.show();
+    });
+
+    mainWindow.on('show', async () => {
+      if (app.dock) {
+        await app.dock.show();
+      }
+    });
+
+    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+      if (this.isAllowedUrl(url)) {
+        void shell.openExternal(url);
+      }
+
+      return { action: 'deny' };
+    });
+
+    mainWindow.webContents.on('will-navigate', (event) => {
+      event.preventDefault();
+    });
+
+    if (IS_DEV) {
+      mainWindow.webContents.on('devtools-opened', () => {
+        setImmediate(() => {
+          mainWindow.focus();
+        });
+      });
+      mainWindow.webContents.openDevTools();
+    }
+
+    if (IS_DEV) {
+      await mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
+    } else {
+      await mainWindow.loadFile('index.html');
+    }
+
+    listenForContextMenu(mainWindow);
+
+    return mainWindow;
+  }
+
+  private isAllowedUrl(url: string) {
+    const allowedWebsites = [
+      'https://cs-demo-manager.com/',
+      'https://github.com/',
+      'https://steamcommunity.com/',
+      'https://ffmpeg.org/',
+      'http://www.virtualdub.org/',
+      'https://www.faceit.com/',
+      'https://support.apple.com/',
+      'https://www.advancedfx.org/',
+      'https://docs.faceit.com/',
+      'https://discord.com/',
+      'https://www.5eplay.com/',
+      'https://arena.5eplay.com/',
+      'https://renown.gg/',
+      'https://esplay.com/',
+      'https://leetify.com/',
+      'https://date-fns.org/',
+      'https://wikipedia.org/',
+    ];
+
+    for (const website of allowedWebsites) {
+      if (url.startsWith(website)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+}
+
+export const windowManager = new WindowManager();

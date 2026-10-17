@@ -24,9 +24,11 @@ def main() -> None:
             PRAGMA user_version = 6;
             CREATE TABLE matches (
                 id INTEGER PRIMARY KEY, file_name TEXT NOT NULL,
+                file_path TEXT, source_sha256 TEXT,
                 map_name TEXT NOT NULL, score_ct INTEGER NOT NULL,
                 score_t INTEGER NOT NULL, imported_at TEXT NOT NULL,
-                parser_capability TEXT NOT NULL, effect_attribution_version INTEGER
+                parser_capability TEXT NOT NULL, effect_attribution_version INTEGER,
+                tick_rate REAL, duration_ticks INTEGER
             );
             CREATE TABLE players (match_id INTEGER, steamid TEXT, name TEXT);
             CREATE TABLE rounds (
@@ -47,10 +49,10 @@ def main() -> None:
                    CASE WHEN m.parser_capability = 'grenade-only-v1' OR m.effect_attribution_version IS NOT 2 OR e.damage_attribution_complete != 1 THEN NULL ELSE e.damage_enemy END AS damage_enemy
             FROM utility_events e JOIN matches m ON m.id = e.match_id;
             INSERT INTO matches VALUES
-                (101, 'synthetic-alpha.dem', 'de_mirage', 13, 9,
-                 '2026-01-02T12:00:00Z', 'synthetic-ci-only', 2),
-                (102, 'synthetic-beta.dem', 'de_inferno', 6, 13,
-                 '2026-01-01T12:00:00Z', 'synthetic-ci-only', NULL);
+                (101, 'synthetic-alpha.dem', NULL, NULL, 'de_mirage', 13, 9,
+                 '2026-01-02T12:00:00Z', 'synthetic-ci-only', 2, 64.0, 57600),
+                (102, 'synthetic-beta.dem', NULL, NULL, 'de_inferno', 6, 13,
+                 '2026-01-01T12:00:00Z', 'synthetic-ci-only', NULL, NULL, NULL);
             INSERT INTO players VALUES
                 (101, 'synthetic-ct-1', 'Synthetic CT'),
                 (101, 'synthetic-t-1', 'Synthetic T');
@@ -67,6 +69,10 @@ def main() -> None:
         assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     digest = hashlib.sha256(db_path.read_bytes()).hexdigest()
     print(f"Synthetic fixture: {db_path}; SHA-256: {digest}")
+    demo_path = output_dir / "synthetic-combat.dem"
+    with demo_path.open("xb") as demo:
+        demo.write(b"PBDEMS2\0synthetic public import contract fixture")
+    print(f"Synthetic import input: {demo_path}; SHA-256: {hashlib.sha256(demo_path.read_bytes()).hexdigest()}")
 
 
 if __name__ == "__main__":

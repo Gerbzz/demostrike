@@ -1,0 +1,39 @@
+nodeLinker: hoisted
+minimumReleaseAge: 1440
+autoDedupe: true
+saveTypes: true
+
+packages:
+  - src/node/os/get-running-process-exit-code
+
+allowBuilds:
+  electron-winstaller: true
+  esbuild: true
+  registry-js: true
+  '@akiver/cs-demo-analyzer': true
+
+catalog:
+  node-gyp: 13.1.0
+  vite: npm:@voidzero-dev/vite-plus-core@1.0.0
+  vitest: 5.0.3
+
+overrides:
+  node-gyp: 'catalog:'
+  vite: 'catalog:'
+  vitest: 'catalog:'
+
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: '*'
+    vitest: '*'
+
+minimumReleaseAgeExclude:
+  - '@akiver/cs-demo-analyzer'
+  - 'csgo-protobuf'
+  - csgo-sharecode
+  - framer-motion@13.4.3
+  - motion@13.4.3
+  - undici@8.11.1

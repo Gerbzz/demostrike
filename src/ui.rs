@@ -1086,7 +1086,8 @@ impl DemoStrikeApp {
                     e.throw_pos.x, e.throw_pos.y, e.throw_pos.z, detail.trajectory.len(), detail.nearby_players.len()));
                 if e.parser_capability == ParserCapabilities::GrenadeAnalysisOnlyV1 {
                     ui.small("Combat, flash effects, kills, assists, and economy unavailable. POV slot has not been capture-verified.");
-                } else if e.parser_capability == ParserCapabilities::NativeCombatFlashV1 {
+                } else if matches!(e.parser_capability,
+                    ParserCapabilities::NativeCombatFlashV1 | ParserCapabilities::NativeCombatFullV2) {
                     ui.small("Native grenade, combat, and flash events. Economy unavailable; POV slot has not been capture-verified.");
                     if e.effect_attribution_status != "complete" {
                         ui.colored_label(egui::Color32::YELLOW, format!("Effect attribution: {}. Raw facts are preserved; unavailable totals are not zero.", e.effect_attribution_status));
@@ -1626,7 +1627,8 @@ impl eframe::App for DemoStrikeApp {
             }
             if self.capabilities == Some(ParserCapabilities::GrenadeAnalysisOnlyV1) {
                 ui.colored_label(egui::Color32::YELLOW, "Grenade analysis only: combat damage, blinds, kills, assists, and economy are unavailable. These metrics are not zero-valued results.");
-            } else if self.capabilities == Some(ParserCapabilities::NativeCombatFlashV1) {
+            } else if matches!(self.capabilities,
+                Some(ParserCapabilities::NativeCombatFlashV1 | ParserCapabilities::NativeCombatFullV2)) {
                 ui.colored_label(egui::Color32::YELLOW, "Native grenade, combat, and flash facts: economy and verified POV capture remain unavailable.");
             }
             let ambiguous = analyzed.effect_facts.iter().filter(|fact| fact.resolution == "ambiguous").count();

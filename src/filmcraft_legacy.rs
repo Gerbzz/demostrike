@@ -72,6 +72,13 @@ struct Clip {
 }
 
 #[derive(Debug, Clone)]
+struct CueMarker {
+    id: u64,
+    time_ms: i64,
+    label: String,
+}
+
+#[derive(Debug, Clone)]
 struct Plan {
     name: String,
     width: u32,
@@ -81,6 +88,7 @@ struct Plan {
     tracks: Vec<Track>,
     assets: Vec<Asset>,
     clips: Vec<Clip>,
+    markers: Vec<CueMarker>,
     original: Value,
 }
 
@@ -250,7 +258,7 @@ fn plan_str(source: &str, base: &Path) -> Result<Plan, Refusal> {
         "project",
         &mut reasons,
     );
-    for field in ["titles", "generators", "transition_masks", "transitions", "markers"] {
+    for field in ["titles", "generators", "transition_masks", "transitions"] {
         reject_nonempty(root, field, "project", &mut reasons);
     }
     if root.get("watermark_asset_id").is_some_and(|v| !v.is_null()) {
@@ -505,10 +513,42 @@ fn plan_str(source: &str, base: &Path) -> Result<Plan, Refusal> {
             reasons.push(format!("clips {} and {} overlap on track {}; editor placement would overwrite one", pair[0].id, pair[1].id, pair[0].track_id));
         }
     }
+    let marker_values = array(root, "markers", "project")?;
+    if marker_values.len() > 128 {
+        reasons.push("project.markers exceeds the 128-cue import limit".into());
+    }
+    let mut markers = Vec::new();
+    let mut marker_ids = BTreeSet::new();
+    for (index, value) in marker_values.iter().enumerate() {
+        let context = format!("marker[{index}]");
+        let marker = obj(value, &context)?;
+        check_keys(marker, &["id", "time_ms", "label", "color"], &context, &mut reasons);
+        let id = positive_id(marker, "id", &context)?;
+        if !marker_ids.insert(id) {
+            reasons.push(format!("{context}.id {id} is duplicated"));
+        }
+        let time_ms = integer(marker, "time_ms", &context)?;
+        if !(0..=MAX_TIME_MS).contains(&time_ms) {
+            reasons.push(format!("{context}.time_ms is outside the editor timeline"));
+        }
+        let label = text(marker, "label", &context)?;
+        if label.trim().is_empty() || label.len() > 160 {
+            reasons.push(format!("{context}.label must be 1–160 characters"));
+        }
+        // The offline handoff's cue color maps to FilmCraft Mango. Other legacy
+        // colors still refuse conversion rather than silently changing a cue.
+        let color = array(marker, "color", &context)?;
+        if color.iter().map(Value::as_u64).collect::<Option<Vec<_>>>()
+            != Some(vec![244, 180, 79, 255])
+        {
+            reasons.push(format!("{context}.color has no verified FilmCraft mapping"));
+        }
+        markers.push(CueMarker { id, time_ms, label });
+    }
     if !reasons.is_empty() {
         return Err(Refusal { reasons });
     }
-    Ok(Plan { name, width, height, fps, master_gain_db: 20.0 * master.log10(), tracks, assets, clips, original })
+    Ok(Plan { name, width, height, fps, master_gain_db: 20.0 * master.log10(), tracks, assets, clips, markers, original })
 }
 
 fn step_error(step: &str, error: impl fmt::Display) -> Refusal {
@@ -710,6 +750,39 @@ fn convert(plan: Plan) -> Result<Session, Refusal> {
             )
             .map_err(|e| step_error(&format!("audio track {}", track.id), e))?;
     }
+    let marker_rate = rate_for(plan.fps).ok_or_else(|| Refusal::one("converted sequence frame rate changed"))?;
+    for marker in &plan.markers {
+        // ClipStrike stores cue times in whole milliseconds; a 60 fps frame
+        // often falls between them. Carry the intended nearest frame into
+        // FilmCraft so the ruler and placed clips use one time base.
+        let cue_time = marker_rate.snap_nearest(ticks(marker.time_ms));
+        session
+            .execute(
+                "markers.add",
+                json!({
+                    "time": cue_time.0,
+                    "name": marker.label,
+                    "comment": format!("Imported ClipStrike cue {}; original RGBA and source JSON are retained in Project Notes", marker.id),
+                    "color": "Mango",
+                }),
+            )
+            .map_err(|e| step_error(&format!("cue marker {}", marker.id), e))?;
+    }
+    let seq = session.active_sequence().ok_or_else(|| Refusal::one("converted cue sequence disappeared"))?;
+    for marker in &plan.markers {
+        let cue_time = marker_rate.snap_nearest(ticks(marker.time_ms));
+        if !seq.markers.iter().any(|cue| cue.start == cue_time && cue.name == marker.label) {
+            return Err(Refusal::one(format!("cue marker {} changed time or label during conversion", marker.id)));
+        }
+    }
+    if let Some(last_ms) = plan.markers.iter().map(|marker| marker.time_ms).max() {
+        let active = session.state.active_sequence.ok_or_else(|| Refusal::one("converted cue sequence is not active"))?;
+        let pps = (560.0 / (last_ms as f64 / 1_000.0 + 0.75)).clamp(28.0, 100.0);
+        session.state.timeline_views.insert(active, filmcraft_project::SequenceView {
+            pps, scroll: 0.0, v_scroll: 0.0, a_scroll: 0.0,
+            video_track_h: 52.0, audio_track_h: 36.0,
+        });
+    }
     let notes = format!("ClipStrike legacy source JSON retained for provenance. Original .cstrike is unchanged.\\n{}", plan.original);
     session
         .edit("Legacy Source Provenance", move |project, _| {
@@ -737,6 +810,46 @@ pub fn load_and_convert(path: &Path) -> Result<Session, Refusal> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_cue_project_opens_and_preserves_markers_after_save() {
+        use clipstrike_core::project::{Marker as ClipstrikeMarker, Project as ClipstrikeProject, Track as ClipstrikeTrack};
+        let mut source = ClipstrikeProject::new("offline cue handoff", 1920, 1080, 60.0);
+        source.tracks = (1..=3).map(|id| ClipstrikeTrack::new(id, &format!("Camera {id}"))).collect();
+        source.markers = [
+            (2_000, "Lineup pause begins - both cameras"),
+            (4_000, "Lineup pause ends - both cameras"),
+            (4_750, "Grenade release - synchronized"),
+            (5_800, "Detonation"),
+        ].into_iter().enumerate().map(|(index, (time_ms, label))| ClipstrikeMarker {
+            id: index + 1, time_ms, label: label.into(), color: [244, 180, 79, 255],
+        }).collect();
+        let source_json = String::from_utf8(source.to_json_bytes().unwrap()).unwrap();
+        let plan = plan_str(&source_json, Path::new("." )).unwrap();
+        assert_eq!(plan.markers.len(), 4);
+        let mut session = convert(plan).unwrap();
+        let cues = &session.active_sequence().unwrap().markers;
+        assert_eq!(cues.len(), 4);
+        assert_eq!(cues[0].start, ticks(2_000));
+        assert_eq!(cues[0].name, "Lineup pause begins - both cameras");
+        assert_eq!(cues[1].start - cues[0].start, ticks(2_000));
+        let view = session.state.timeline_views[&session.state.active_sequence.unwrap()];
+        assert!(view.pps >= 28.0 && view.scroll == 0.0);
+        let dir = tempfile::tempdir().unwrap();
+        let saved = dir.path().join("converted.fcproj");
+        session.execute("file.saveAs", json!({"path": saved.to_string_lossy()})).unwrap();
+        let mut reopened = Session::default();
+        reopened.execute("file.open", json!({"path": saved.to_string_lossy()})).unwrap();
+        let cues = &reopened.active_sequence().unwrap().markers;
+        assert_eq!(cues.len(), 4);
+        assert_eq!(cues[2].start, ticks(4_750));
+        assert_eq!(cues[3].name, "Detonation");
+
+        let mut unsupported: Value = serde_json::from_str(&source_json).unwrap();
+        unsupported["markers"][0]["color"] = json!([0, 0, 0, 255]);
+        assert!(plan_str(&unsupported.to_string(), Path::new("."))
+            .unwrap_err().to_string().contains("no verified FilmCraft mapping"));
+    }
 
     #[test]
     fn plain_media_paths_keep_literal_percent_characters() {

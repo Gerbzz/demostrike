@@ -1,0 +1,199 @@
+/* oxlint-disable typescript/no-explicit-any */
+import path from 'node:path';
+import { format } from 'node:util';
+import fs from 'fs-extra';
+import type { FSWatcher } from 'chokidar';
+import { watch } from 'chokidar';
+import { getAppFolderPath } from 'csdm/node/filesystem/get-app-folder-path';
+
+export interface ILogger {
+  debug: (...data: any[]) => void;
+  log: (...data: any[]) => void;
+  warn: (...data: any[]) => void;
+  error: (...data: any[]) => void;
+  getLogFilePath: () => string;
+  clear: () => Promise<void>;
+}
+
+type Level = 'debug' | 'log' | 'warn' | 'error';
+
+class Logger implements ILogger {
+  private logFolderPath: string;
+  private logFilePath: string;
+  private fileStream: fs.WriteStream | null = null;
+  private watcher: FSWatcher | null = null;
+  private cache: any[] = [];
+  private shouldLogToGlobalConsole = true;
+  private isVerbose = true;
+
+  public constructor() {
+    this.logFolderPath = path.join(getAppFolderPath(), 'logs');
+    this.logFilePath = path.join(this.logFolderPath, 'csdm.log');
+    // We only call the global Console methods when we are in development build or in the Electron renderer process
+    // for the following reasons:
+    // - On Windows AND in production build it may actually block the server process when logging large chunks of data.
+    // - The Electron main process and WebSocket server processes stdout are never visible in production since there
+    // is no terminal / window involved.
+    //
+    // Note:
+    // process.type => "renderer" in development build as we start it from an Electron window
+    // process.type => undefined in production build
+    // This flag has been added after noticing that on Windows, logging the insertion of many demos NOT already in the
+    // database (tested with 256 demos) it blocks the WebSocket server process in production build.
+    this.shouldLogToGlobalConsole = IS_DEV || process.type === 'renderer';
+    if (process.env.PROCESS_NAME === 'cli' && !process.argv.includes('--verbose')) {
+      this.isVerbose = false;
+    }
+  }
+
+  public debug = (...data: any[]) => {
+    if (!this.isVerbose) {
+      return;
+    }
+
+    this.logToConsole(data, 'debug');
+    void this.writeLogToFile(data, 'debug');
+  };
+
+  public log = (...data: any[]) => {
+    this.logToConsole(data, 'log');
+    void this.writeLogToFile(data, 'log');
+  };
+
+  public warn = (...data: any[]) => {
+    this.logToConsole(data, 'warn');
+    void this.writeLogToFile(data, 'warn');
+  };
+
+  public error = (...data: any[]) => {
+    this.logToConsole(data, 'error');
+    void this.writeLogToFile(data, 'error');
+  };
+
+  public getLogFilePath = () => {
+    return this.logFilePath;
+  };
+
+  public clear = async () => {
+    const fileExists = await fs.pathExists(this.logFilePath);
+    if (!fileExists) {
+      return;
+    }
+
+    try {
+      await fs.writeFile(this.logFilePath, '');
+    } catch (error) {
+      this.error('Failed to clear log file', error);
+      throw error;
+    }
+  };
+
+  private logToConsole = (data: any[], level: Level) => {
+    if (!this.shouldLogToGlobalConsole) {
+      return;
+    }
+
+    // The renderer process logs go to its own DevTools console, a prefix identifying the process would be noise there
+    // (it would also be wrong in the preload script where PROCESS_NAME is inherited from the main process).
+    if (process.type === 'renderer') {
+      console[level](...data);
+    } else {
+      console[level](`[${process.env.PROCESS_NAME}]`, ...data);
+    }
+  };
+
+  private jsonStringifyReplacer = (key: any, value: any) => {
+    if (value instanceof Error) {
+      if (value.cause) {
+        return `${value.stack}\n\tCAUSE: ${value.cause as string}`;
+      }
+
+      return value.stack;
+    }
+
+    if (!value) {
+      return value;
+    }
+
+    if (typeof value.toJSON === 'function') {
+      return value.toJSON();
+    }
+
+    if (typeof value === 'function') {
+      return '[function] ' + value.toString();
+    }
+
+    if (typeof value === 'object' && value !== null) {
+      // Avoid possible circular reference
+      if (this.cache.includes(value)) {
+        return;
+      }
+
+      this.cache.push(value);
+    }
+
+    return value;
+  };
+
+  private formatDataToWrite = (...data: any[]) => {
+    const json = data.map((value) => {
+      if (value === undefined) {
+        return undefined;
+      }
+
+      const string = JSON.stringify(value, this.jsonStringifyReplacer, 2);
+      this.cache = [];
+
+      if (string === undefined) {
+        return undefined;
+      }
+
+      return JSON.parse(string);
+    });
+
+    return format(...json);
+  };
+
+  private buildLogLine = (data: any[], level: Level) => {
+    const prefix = `${new Date().toISOString()} | ${level.toUpperCase()} | ${process.env.PROCESS_NAME} |`;
+
+    return `${prefix} ${this.formatDataToWrite(...data)}\n`;
+  };
+
+  private onFileDeleted = () => {
+    this.fileStream?.close();
+    this.fileStream = null;
+  };
+
+  private ensureLogFileExists = async () => {
+    await fs.ensureFile(this.logFilePath);
+  };
+
+  private clearLogsIfFileMaxSizeReached = async () => {
+    const { size } = await fs.stat(this.logFilePath);
+    const fileSizeInMegabytes = size / (1024 * 1024);
+    if (fileSizeInMegabytes > 1) {
+      await this.clear();
+    }
+  };
+
+  private watchForFileDeletion = async () => {
+    await this.watcher?.close();
+    this.watcher = watch(this.logFolderPath).on('unlink', this.onFileDeleted);
+  };
+
+  private writeLogToFile = async (data: any[], level: Level) => {
+    await this.ensureLogFileExists();
+    await this.clearLogsIfFileMaxSizeReached();
+
+    if (this.fileStream === null) {
+      this.fileStream = fs.createWriteStream(this.logFilePath, { flags: 'a' });
+      await this.watchForFileDeletion();
+    }
+
+    const line = this.buildLogLine(data, level);
+    this.fileStream.write(line);
+  };
+}
+
+globalThis.logger = new Logger();

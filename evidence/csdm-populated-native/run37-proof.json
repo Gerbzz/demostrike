@@ -1,0 +1,27 @@
+{
+  "source": "actual hosted Tauri WebView2 window with original CS Demo Manager renderer",
+  "data": "new empty local SQLite plus a separate sanitized synthetic DemoStrike library",
+  "scope": "original CSDM shell and table engine with data-limited match, rounds, players, and demo-folder routes; import and other backend contracts remain unported",
+  "commit": "b72da0d8908f6d65f2cf74de96f16f9acf21a64c",
+  "executableSha256": "f83a226aa86edc37b25c32bbc834a66ca08063d4f3f23fe1a701d1dfee8243b2",
+  "screenshotSha256": "5839526dbd7c3d4b9a1b3410b9d49235f3c24c429ba510ae0fdb973bb7cce758",
+  "matchesScreenshotSha256": "42b1403bdad120d2540038131940d90cc1c2f15d8567f7c166a0df7a3c55d26e",
+  "overviewScreenshotSha256": "779f74d24b36988626c0924aedf6e5fc1bf10fcb35fe4f2cd49c01747669b5b4",
+  "roundsScreenshotSha256": "f3d510f3d152699378f47bddaefc3a6b17c5c766678101486e2dd9d02f44db79",
+  "playersScreenshotSha256": "00ee93f6a8490817b343e4199b7381eb527897fbc46daef8d599456f61b2f037",
+  "utilityScreenshotSha256": "9963f4613ad210f080ecfd53cdd8ff2493a840ce02a3c1e9d4c609482547a666",
+  "unsupportedScreenshotSha256": "a8a250b86bafd15c73b89687ee3d5c1340993220fa70c6ecc5bb3af9e644e831",
+  "demoFolderScreenshotSha256": "56338e6c1dc12f299157be35bfa4037781af041a6442ac7922cba77a4b9d3060",
+  "syntheticDemoHashes": [
+    "ced30e5be697d69eae6f2913221cd7265b5377d74bdc3101e99bcc5fc9e51d22",
+    "6537d2dfd1ce8f419d19ad404a27572db417cbd12e666bb0555f3fe1254523bd"
+  ],
+  "fixtureSha256": "edcc9063ed5d29f0b1b7ae3143edd381b308228d3835ca9e1fce89542be37337",
+  "runtimeUrl": "http://tauri.localhost/#/demos",
+  "originalSidebarRoutes": [
+    "matches",
+    "demos",
+    "players",
+    "teams"
+  ]
+}
